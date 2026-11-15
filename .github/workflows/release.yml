@@ -14,8 +14,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  publication:
     if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'kallupx/controller-utils'
+    runs-on: ubuntu-24.04
+    outputs:
+      needed: ${{ steps.state.outputs.needed }}
+    steps:
+      - name: Check whether the release is already published
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > release.json 2> release-error.txt
+          then
+            python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          print("needed=" + str(json.load(open("release.json"))["draft"]).lower())
+          PY
+          elif grep -q 'HTTP 404' release-error.txt
+          then
+            echo 'needed=true' >> "$GITHUB_OUTPUT"
+          else
+            cat release-error.txt >&2
+            exit 1
+          fi
+  release:
+    needs: publication
+    if: needs.publication.outputs.needed == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     environment: release

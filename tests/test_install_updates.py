@@ -133,6 +133,8 @@ elif sys.argv[1] in ('--repair', '--repair-status', '--apply', '--confirm'):
     assert os.getuid() == 0
 elif sys.argv[1] == '--uninstall':
     assert os.getuid() == 0
+    if pathlib.Path('/home/steamos/fail-uninstall').exists():
+        sys.exit(1)
     shutil.rmtree('/var/lib/controllertracking')
 else:
     raise ValueError(sys.argv)
@@ -144,7 +146,18 @@ else:
     write(root / "test-bin/uname", "#!/bin/sh\nprintf '%s\\n' aarch64\n", 0o755)
     write(
         root / "test-bin/systemctl",
-        '#!/bin/sh\nprintf \'%s %s\\n\' "$(id -u)" "$*" >> /home/steamos/systemctl.log\n',
+        """#!/bin/sh
+printf '%s %s\\n' "$(id -u)" "$*" >> /home/steamos/systemctl.log
+case "$*" in
+    '--user is-active --quiet steamvr.service') [ ! -e /home/steamos/steamvr.inactive ] ;;
+    '--user show steamvr.service -p LoadState --value')
+        if [ -e /home/steamos/steamvr.masked ]; then printf '%s\\n' masked; else printf '%s\\n' loaded; fi ;;
+    '--user mask --runtime steamvr.service') touch /home/steamos/steamvr.masked ;;
+    '--user stop steamvr.service') [ -e /home/steamos/steamvr.masked ] || exit 1 ;;
+    '--user unmask --runtime steamvr.service') rm /home/steamos/steamvr.masked ;;
+    '--user start steamvr.service') [ ! -e /home/steamos/steamvr.masked ] || exit 1 ;;
+esac
+""",
         0o755,
     )
     write(root / "test-bin/udevadm", "#!/bin/sh\nexit 0\n", 0o755)
@@ -212,6 +225,10 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         os.chown(PRIVILEGED, 1000, 1000)
     elif case == "unsafe-root-mode":
         PRIVILEGED.chmod(0o777)
+    elif case == "masked-runtime":
+        write(Path("/home/steamos/steamvr.masked"), "preexisting mask")
+    elif case == "inactive-runtime":
+        write(Path("/home/steamos/steamvr.inactive"), "inactive")
     user_command = [
         shutil.which("runuser"),
         "-u",
@@ -245,9 +262,11 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         capture_output=True,
         text=True,
     )
-    if case == "normal" and result.returncode == 0:
+    if case in ("normal", "remove-failure") and result.returncode == 0:
         repeated = subprocess.run(command, capture_output=True, text=True).returncode
         write(BASE / "app-data/startup-recovery", "disabled recovery")
+        if case == "remove-failure":
+            write(Path("/home/steamos/fail-uninstall"), "fail")
         removed = subprocess.run(
             [*user_command, "/bin/sh", str(BASE / "app/uninstall.sh")],
             capture_output=True,
@@ -319,6 +338,7 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
                 "systemctl": Path("/home/steamos/systemctl.log").read_text().splitlines()
                 if Path("/home/steamos/systemctl.log").exists()
                 else [],
+                "steamvr_masked": Path("/home/steamos/steamvr.masked").exists(),
             }
         )
     )
@@ -391,6 +411,11 @@ class InstallUpdatesTest(unittest.TestCase):
             self.assertEqual(operation["uid"], 1000, operation)
             self.assertEqual(operation["euid"], 1000, operation)
         self.assertTrue(all(line.startswith("1000 ") for line in result["systemctl"]))
+        self.assertFalse(result["steamvr_masked"])
+        self.assertEqual(result["systemctl"].count("1000 --user mask --runtime steamvr.service"), 2)
+        self.assertEqual(
+            result["systemctl"].count("1000 --user unmask --runtime steamvr.service"), 2
+        )
 
     def test_partial_native_setup_can_be_removed_without_installed_app(self):
         result = self.check_case("partial-registration-failure")
@@ -398,6 +423,27 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertEqual(result["cleanup_status"], 0, result["stderr"])
         self.assertFalse(result["root_exists"] or result["app_exists"] or result["service_exists"])
         self.assertEqual(result["settings"], "preserved settings")
+
+    def test_failed_removal_restores_steamvr_startup(self):
+        result = self.check_case("remove-failure")
+        self.assertEqual(result["status"], 0, result["stderr"])
+        self.assertNotEqual(result["remove_status"], 0)
+        self.assertTrue(result["app_exists"] and result["root_exists"])
+        self.assertFalse(result["steamvr_masked"])
+        self.assertEqual(result["systemctl"][-1], "1000 --user start steamvr.service")
+
+    def test_existing_steamvr_mask_is_preserved(self):
+        result = self.check_case("masked-runtime")
+        self.assertNotEqual(result["status"], 0)
+        self.assertTrue(result["steamvr_masked"])
+        self.assertNotIn("1000 --user unmask --runtime steamvr.service", result["systemctl"])
+        self.assertFalse(any(line.startswith("0 --install ") for line in result["native"]))
+
+    def test_inactive_steamvr_is_not_started_after_installation(self):
+        result = self.check_case("inactive-runtime")
+        self.assertEqual(result["status"], 0, result["stderr"])
+        self.assertFalse(result["steamvr_masked"])
+        self.assertNotIn("1000 --user start steamvr.service", result["systemctl"])
 
     def test_failed_registration_cleans_user_installation_and_keeps_settings(self):
         result = self.check_case("registration-failure")
@@ -407,6 +453,7 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertIsNone(result["root_owner"])
         self.assertTrue(result["replacement_denied"])
         self.assertIn("1000 --user start steamvr.service", result["systemctl"])
+        self.assertFalse(result["steamvr_masked"])
 
     def test_home_symlinks_cannot_transfer_privileged_directory(self):
         for case in ("service-link", "ancestor-link", "service-file-link", "lock-link", "race"):

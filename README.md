@@ -23,29 +23,21 @@ The app is experimental.
 
 ## Install
 
-1. On Frame, put the ARM64 archive, `latest.json` and `latest.sig` from the same
-   [release](https://github.com/kallupx/controller-utils/releases) in one folder.
-2. Open a terminal there as `steamos`. Set a password with `passwd` if needed.
-3. Download the verifier separately from this repository, then run it without sudo:
+Open a terminal on Frame and run:
 
-   ```sh
-   curl --fail --proto '=https' --tlsv1.2 \
-     https://raw.githubusercontent.com/kallupx/controller-utils/v0.1.0/packaging/bootstrap.py \
-     --output controller-utils-bootstrap.py
-   python3 controller-utils-bootstrap.py "$PWD"
-   ```
+```sh
+curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packaging/bootstrap.py | python3 -
+```
 
-   The verifier checks the signature before running the installer. Installation
-   asks for administrator access and may restart SteamVR.
-4. Start SteamVR and open Controller Utils from the desktop launcher. Pair your
-   gamepad with Frame, leave Enable tracking on and follow the headset prompts.
+The script downloads the latest release, verifies it and installs the app.
+Installation asks for your password and briefly restarts SteamVR. Set a password
+with `passwd` first if you haven't already.
+
+Open Controller Utils from the desktop launcher. Pair your gamepad with Frame,
+leave Enable tracking on and follow the headset prompts.
 
 The app starts with SteamVR after its first launch. Change this in App settings.
 For an existing installation, use updates or uninstall before installing again.
-
-If installation asks for cleanup, run
-`python3 controller-utils-bootstrap.py --cleanup "$PWD"` from the same folder
-before retrying.
 
 ## Controls
 
@@ -74,7 +66,7 @@ Enable Automatic updates in App settings to download signed GitHub releases.
 For a manual check, select Check now. Updates install when SteamVR next starts. Later updates
 and permission repairs run without another password prompt.
 
-To uninstall, start SteamVR and run:
+To uninstall, run:
 
 ```sh
 ~/.local/share/controllertracking/app/uninstall.sh

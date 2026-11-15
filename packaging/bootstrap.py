@@ -14,6 +14,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAgOeA07dV3lAIKraJnLObYbJJTd7F/n6YTLvCmnq4Xfo=\n-----END PUBLIC KEY-----\n"
+RELEASES = "https://github.com/kallupx/controller-utils/releases/"
 MAX_ARCHIVE = 128 * 1024 * 1024
 MAX_CONTENTS = 256 * 1024 * 1024
 
@@ -37,7 +38,7 @@ def unique_object(items):
     return result
 
 
-def verify_package(feed, work, public_key=PUBLIC_KEY):
+def verify_metadata(feed, work, public_key=PUBLIC_KEY):
     work.mkdir(mode=0o700, parents=True, exist_ok=False)
     for name, limit in (("latest.json", 65536), ("latest.sig", 64)):
         with regular(feed / name, limit) as source:
@@ -81,6 +82,12 @@ def verify_package(feed, work, public_key=PUBLIC_KEY):
         or (expiry and expiry <= time.time())
     ):
         raise ValueError("Invalid or expired release metadata")
+    return metadata
+
+
+def verify_package(feed, work, public_key=PUBLIC_KEY):
+    metadata = verify_metadata(feed, work, public_key)
+    artifact, size, digest = metadata["artifact"], metadata["size"], metadata["sha256"]
     hashed = hashlib.sha256()
     copied = 0
     with regular(feed / artifact, MAX_ARCHIVE) as source, (work / artifact).open("xb") as output:
@@ -121,14 +128,64 @@ def verify_package(feed, work, public_key=PUBLIC_KEY):
     return destination
 
 
+def download(url, destination, limit):
+    subprocess.run(
+        [
+            "/usr/bin/curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "180",
+            "--max-filesize",
+            str(limit),
+            "--output",
+            str(destination),
+            url,
+        ],
+        check=True,
+        timeout=190,
+    )
+
+
+def download_release(feed, public_key=PUBLIC_KEY):
+    feed.mkdir(mode=0o700)
+    print("Downloading the latest Controller Utils release...", flush=True)
+    download(RELEASES + "latest/download/latest.json", feed / "latest.json", 65536)
+    with regular(feed / "latest.json", 65536) as source:
+        version = json.load(source, object_pairs_hook=unique_object)["version"]
+    if not isinstance(version, str) or not re.fullmatch(
+        r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", version
+    ):
+        raise ValueError("Invalid release version")
+    release_url = RELEASES + "download/v" + version + "/"
+    download(release_url + "latest.sig", feed / "latest.sig", 64)
+    metadata = verify_metadata(feed, feed / "authenticated", public_key)
+    download(release_url + metadata["artifact"], feed / metadata["artifact"], metadata["size"])
+    return feed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cleanup", action="store_true")
-    parser.add_argument("release_directory", type=Path)
+    parser.add_argument("release_directory", type=Path, nargs="?")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="controller-utils-bootstrap-") as temporary:
+        feed = (
+            args.release_directory.resolve()
+            if args.release_directory is not None
+            else download_release(Path(temporary) / "release")
+        )
         work = Path(temporary) / "verified"
-        installer = verify_package(args.release_directory.resolve(), work)
+        installer = verify_package(feed, work)
+        print("Release verified. Starting installation...", flush=True)
         command = ["/bin/sh", str(installer / "install.sh")]
         if args.cleanup:
             command.append("--cleanup")

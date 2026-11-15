@@ -13,6 +13,7 @@ base=$HOME/.local/share/controllertracking
 [ -x /opt/steamvr/bin/linuxarm64/vrpathreg ] || fail 'The SteamVR driver registration tool is missing.'
 sudo -v || fail 'Authentication is required to uninstall Controller Utils.'
 systemctl --user is-active --quiet steamvr.service || fail 'Start SteamVR before uninstalling so its app registration can be removed.'
+[ "$(systemctl --user show steamvr.service -p LoadState --value)" != masked ] || fail 'SteamVR is masked. Unmask it before uninstalling.'
 processes=$(pgrep -u 1000 -f '^/home/steamos/.local/share/controllertracking/app/controller-utils( |$)' || true)
 if [ -n "$processes" ]
 then
@@ -27,15 +28,19 @@ then
 fi
 "$base/app/controller-utils" --unregister
 resume=false
+masked=false
 cleanup() {
     status=$?
     trap - EXIT
+    if "$masked"; then systemctl --user unmask --runtime steamvr.service || status=1; fi
     if "$resume"; then systemctl --user start steamvr.service || status=1; fi
     exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 resume=true
+masked=true
+systemctl --user mask --runtime steamvr.service
 systemctl --user stop steamvr.service
 exec 9<> "$base/app-data/app.lock"
 flock -n 9 || fail 'Close Controller Utils before uninstalling.'

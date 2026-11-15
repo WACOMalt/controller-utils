@@ -25,6 +25,7 @@ service=$HOME/.local/share/systemd/user/controller-utils-update.service
 [ ! -e "$service" ] && [ ! -L "$service" ] || fail 'An existing update service needs review before installation.'
 work=$(mktemp -d "$base/.install.XXXXXXXX")
 resume=false
+masked=false
 complete=false
 app_installed=false
 launcher_installed=false
@@ -42,7 +43,7 @@ cleanup() {
         if "$native_installed" && ! "$native_preexisting"; then
             if ! sudo -n "$work/setup-updater" --uninstall; then
                 preserve=true
-                printf '%s\n' 'Native cleanup failed. Run the verified installer with --cleanup and the release directory.' >&2
+                printf '%s\n' 'Native cleanup failed. Run the install command with --cleanup before retrying.' >&2
             fi
         fi
         if "$driver_added"; then /opt/steamvr/bin/linuxarm64/vrpathreg removedriver "$base/native-driver" || true; fi
@@ -61,6 +62,7 @@ cleanup() {
     else
         rm -rf -- "$work"
     fi
+    if "$masked"; then systemctl --user unmask --runtime steamvr.service || status=1; fi
     if "$resume"; then systemctl --user start steamvr.service || status=1; fi
     exit "$status"
 }
@@ -68,11 +70,15 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 "$source_dir/compatibility/controller-utils-updater" --stage "$feed" "$work/package"
 install -m 0755 "$work/package/compatibility/controller-utils-updater" "$work/setup-updater"
+sudo -v || fail 'Authentication is required to install Controller Utils.'
 if systemctl --user is-active --quiet steamvr.service
 then
     resume=true
-    systemctl --user stop steamvr.service
 fi
+[ "$(systemctl --user show steamvr.service -p LoadState --value)" != masked ] || fail 'SteamVR is masked. Unmask it before installing.'
+masked=true
+systemctl --user mask --runtime steamvr.service
+systemctl --user stop steamvr.service
 exec 9<> "$base/app-data/app.lock"
 flock -n 9 || fail 'Close Controller Utils before installing.'
 if "$recover"; then

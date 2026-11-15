@@ -10,6 +10,52 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseUploadTest(unittest.TestCase):
+    def test_published_releases_are_skipped_and_api_failures_are_reported(self):
+        contents = (ROOT / ".github/workflows/release.yml").read_text()
+        step = contents.split("      - name: Check whether the release is already published\n", 1)[
+            1
+        ]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n  release:\n", 1)[0])
+        for response, status, expected in (
+            ('{"draft":false}', 0, "needed=false"),
+            ('{"draft":true}', 0, "needed=true"),
+            ("gh: Not Found (HTTP 404)", 1, "needed=true"),
+            ("gh: Service Unavailable (HTTP 503)", 1, None),
+        ):
+            with self.subTest(response=response), TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                gh = root / "gh"
+                gh.write_text(
+                    "#!/usr/bin/python3\nimport os,sys\n"
+                    "status=int(os.environ['TEST_STATUS'])\n"
+                    "print(os.environ['TEST_RESPONSE'],file=sys.stderr if status else sys.stdout)\n"
+                    "sys.exit(status)\n"
+                )
+                gh.chmod(0o755)
+                output = root / "output"
+                result = subprocess.run(
+                    ["bash", "-eu", "-c", script],
+                    cwd=root,
+                    env={
+                        **os.environ,
+                        "PATH": str(root) + ":" + os.environ["PATH"],
+                        "GITHUB_OUTPUT": str(output),
+                        "GH_REPO": "kallupx/controller-utils",
+                        "RELEASE_TAG": "v0.1.1",
+                        "TEST_RESPONSE": response,
+                        "TEST_STATUS": str(status),
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if expected:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text().strip(), expected)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+
     def test_only_signed_release_files_are_uploaded(self):
         contents = (ROOT / ".github/workflows/release.yml").read_text()
         step = contents.split("      - name: Publish complete GitHub release\n", 1)[1]

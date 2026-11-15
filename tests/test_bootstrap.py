@@ -7,6 +7,7 @@ import tarfile
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("bootstrap", ROOT / "packaging/bootstrap.py")
@@ -66,6 +67,7 @@ class BootstrapTest(unittest.TestCase):
             archive.addfile(member, None if link else io.BytesIO(data))
         self.metadata = {
             "schema": 5,
+            "version": "0.1.0",
             "platform": "linuxarm64",
             "expires": 0,
             "artifact": self.artifact.name,
@@ -109,3 +111,83 @@ class BootstrapTest(unittest.TestCase):
                         self.feed, self.root / ("bad-" + str(link)), self.public
                     )
         self.assertFalse((self.root / "escape").exists())
+
+    def download_release(self, tamper_signature=False):
+        calls = []
+
+        def download(url, destination, limit):
+            calls.append((url, limit))
+            name = url.rsplit("/", 1)[1]
+            data = (self.feed / name).read_bytes()
+            if tamper_signature and name == "latest.sig":
+                data = b"x" * 64
+            self.assertLessEqual(len(data), limit)
+            destination.write_bytes(data)
+
+        with patch.object(bootstrap, "download", side_effect=download):
+            try:
+                feed = bootstrap.download_release(self.root / "download", self.public)
+            finally:
+                self.downloads = calls
+        return feed
+
+    def test_latest_release_pins_signature_and_archive_to_its_version(self):
+        feed = self.download_release()
+        self.assertEqual(
+            self.downloads,
+            [
+                (bootstrap.RELEASES + "latest/download/latest.json", 65536),
+                (bootstrap.RELEASES + "download/v0.1.0/latest.sig", 64),
+                (
+                    bootstrap.RELEASES + "download/v0.1.0/" + self.artifact.name,
+                    self.metadata["size"],
+                ),
+            ],
+        )
+        installer = bootstrap.verify_package(feed, self.root / "verified", self.public)
+        self.assertTrue((installer / "install.sh").is_file())
+
+    def test_invalid_signature_prevents_archive_download(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.download_release(tamper_signature=True)
+        self.assertEqual(len(self.downloads), 2)
+        self.assertFalse((self.root / "download" / self.artifact.name).exists())
+
+    def test_invalid_online_versions_never_form_a_download_url(self):
+        for index, version in enumerate(("../escape", "0.1.0/path", 1)):
+            with self.subTest(version=version):
+                metadata = {**self.metadata, "version": version}
+
+                def download(url, destination, limit):
+                    self.assertEqual(url, bootstrap.RELEASES + "latest/download/latest.json")
+                    destination.write_text(json.dumps(metadata))
+
+                with patch.object(bootstrap, "download", side_effect=download) as request:
+                    with self.assertRaises(ValueError):
+                        bootstrap.download_release(
+                            self.root / ("invalid-" + str(index)), self.public
+                        )
+                self.assertEqual(request.call_count, 1)
+
+    def test_download_requires_https_and_enforces_the_size_limit(self):
+        with patch.object(bootstrap.subprocess, "run") as run:
+            bootstrap.download("https://example.test/release", self.root / "download", 64)
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--proto") + 1], "=https")
+        self.assertEqual(command[command.index("--proto-redir") + 1], "=https")
+        self.assertEqual(command[command.index("--max-filesize") + 1], "64")
+        self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_no_arguments_downloads_and_runs_the_verified_installer(self):
+        installer = self.root / "verified-installer"
+        with (
+            patch("sys.argv", ["bootstrap.py"]),
+            patch.object(bootstrap, "download_release", return_value=self.feed) as fetch,
+            patch.object(bootstrap, "verify_package", return_value=installer) as verify,
+            patch.object(bootstrap.subprocess, "run") as run,
+        ):
+            bootstrap.main()
+        fetch.assert_called_once()
+        self.assertEqual(verify.call_args.args[0], self.feed)
+        self.assertEqual(run.call_args.args[0][:2], ["/bin/sh", str(installer / "install.sh")])
+        self.assertTrue(run.call_args.kwargs["check"])

@@ -7,7 +7,7 @@
 #include <stdexcept>
 
 namespace ct::helper {
-NativePackage::NativePackage(std::filesystem::path path, uid_t owner)
+NativePackage::NativePackage(const std::string &runtime, std::filesystem::path path, uid_t owner)
     : directory_(std::move(path), owner) {
     auto manifest_file = directory_.file("manifest.json", 16384);
     const auto manifest = json::parse(read_file(manifest_file.get(), 16384));
@@ -45,7 +45,8 @@ NativePackage::NativePackage(std::filesystem::path path, uid_t owner)
         header.e_version != EV_CURRENT || header.e_ehsize != sizeof(header))
         throw std::invalid_argument(
             "Adapter library must be a little-endian ARM64 shared library.");
-    layout_ = AdapterLayout::from_json(adapter.get(), Bytes(data[1].begin(), data[1].end()));
+    layout_ =
+        AdapterLayout::from_json(adapter.get(), Bytes(data[1].begin(), data[1].end()), runtime);
     if (fstat(library_.get(), &library_image_))
         throw std::runtime_error("Cannot pin native adapter library.");
     verify({});

@@ -12,7 +12,7 @@ extern "C" int __real_unlinkat(int, const char *, int);
 namespace {
 pid_t fault_process = 0;
 unsigned crash_at = 0;
-bool crash_before = false, crash_after_application = false;
+bool crash_before = false, crash_after_application = false, crash_after_native_cleanup = false;
 unsigned swaps = 0;
 using namespace update_fixture;
 void owned(const std::filesystem::path &path, uid_t user) {
@@ -70,9 +70,10 @@ struct Fixture {
         auto old = j::parse(ct::read_file(data / "updates/pending/latest.json", u::MaxMetadata));
         json_object_object_add(old.get(), "version", json_object_new_string("0.1.0"));
         json_object_object_add(old.get(), "sequence", json_object_new_int(1));
-        json_object_object_add(
-            j::field(j::field(old.get(), "requirements"), "helper"), "controller-utils-updater",
-            json_object_new_string(ct::sha256(helpers / "controller-utils-updater").c_str()));
+        for (const auto &name : u::helper_files(ct::TrackingBackend::Tracker))
+            json_object_object_add(j::field(j::field(old.get(), "requirements"), "helper"),
+                                   name.c_str(),
+                                   json_object_new_string(ct::sha256(helpers / name).c_str()));
         const auto old_bytes = j::encode(old.get());
         sign(cache / "old.sig", key.get(), old_bytes);
         u::record_repair_evidence(ct::ProtectedDirectory(helpers), old_bytes,
@@ -118,7 +119,7 @@ struct Fixture {
     void apply() {
         u::install_update(installation, false, [] { return false; });
     }
-    void confirm() {
+    void application_confirm() {
         const auto pid = fork();
         assert(pid >= 0);
         if (!pid) {
@@ -129,7 +130,16 @@ struct Fixture {
         }
         int status;
         assert(waitpid(pid, &status, 0) == pid && status == 0);
+    }
+    void confirm() {
+        application_confirm();
         u::install_update(installation, true);
+    }
+    void legacy_confirmation() {
+        application_confirm();
+        auto record = j::parse(ct::read_file(cache / "transaction.json", u::MaxMetadata));
+        json_object_object_add(record.get(), "healthy", json_object_new_boolean(true));
+        ct::atomic_write(cache / "transaction.json", j::encode(record.get()));
     }
     void previous() {
         assert(u::release(app).sequence == 1);
@@ -153,6 +163,9 @@ extern "C" int __wrap_renameat2(int from, const char *source, int to, const char
     return result;
 }
 extern "C" int __wrap_unlinkat(int directory, const char *name, int flags) {
+    if (getpid() == fault_process && crash_after_native_cleanup &&
+        !std::strcmp(name, "transaction.json"))
+        _exit(77);
     if (getpid() == fault_process && crash_after_application &&
         !std::strcmp(name, "archive.tar.gz"))
         _exit(77);
@@ -188,9 +201,12 @@ int main() {
         assert(ct::sha256(fixture.base / "native-driver" / u::DriverFiles[1]) ==
                ct::sha256_bytes(program().data(), program().size()));
         fixture.confirm();
+        assert(!std::filesystem::exists(fixture.cache / "previous-native"));
+        assert(!std::filesystem::exists(fixture.cache / "transaction.json"));
         assert(u::verify_repair_updater(ct::ProtectedDirectory(fixture.helpers),
                                         public_key(fixture.key.get()))
                    .sequence == 2);
+        fixture.confirm();
         fixture.apply();
         assert(u::release(fixture.app).sequence == 2);
         fixture.pending(3);
@@ -203,6 +219,71 @@ int main() {
         assert(u::verify_repair_updater(ct::ProtectedDirectory(fixture.helpers),
                                         public_key(fixture.key.get()))
                    .sequence == 2);
+    }
+    {
+        Fixture fixture(root / "confirmed-slot-copy");
+        fixture.apply();
+        fixture.confirm();
+        const auto original = fixture.root / "before-slot-copy";
+        std::filesystem::rename(fixture.helpers, original);
+        std::filesystem::copy(original, fixture.helpers, std::filesystem::copy_options::recursive);
+        assert(!std::filesystem::equivalent(fixture.helpers, original));
+        fixture.pending(3);
+        fixture.apply();
+        assert(u::release(fixture.app).sequence == 3);
+        fixture.confirm();
+    }
+    {
+        for (unsigned tamper = 0; tamper < 4; ++tamper) {
+            Fixture fixture(root / ("legacy-slot-copy-" + std::to_string(tamper)));
+            fixture.apply();
+            fixture.legacy_confirmation();
+            for (const auto &path : {fixture.helpers, fixture.cache / "previous-native"}) {
+                const auto original = fixture.root / ("copied-" + path.filename().string());
+                std::filesystem::rename(path, original);
+                std::filesystem::copy(original, path, std::filesystem::copy_options::recursive);
+                assert(!std::filesystem::equivalent(original, path));
+            }
+            fixture.pending(3);
+            if (tamper == 1)
+                ct::atomic_write(fixture.helpers / "controller-utils-helper", "changed helper");
+            if (tamper == 2)
+                ct::atomic_write(fixture.cache / "previous-native/controller-utils-helper",
+                                 "changed backup");
+            if (tamper == 3)
+                ct::atomic_write(fixture.cache / "previous-native/inspection-note", "preserve");
+            if (tamper) {
+                rejects([&] { fixture.apply(); });
+                assert(u::release(fixture.app).sequence == 2);
+                assert(std::filesystem::exists(fixture.cache / "previous-native"));
+                assert(std::filesystem::exists(fixture.cache / "transaction.json"));
+            } else {
+                fixture.apply();
+                assert(u::release(fixture.app).sequence == 3);
+                fixture.confirm();
+            }
+        }
+    }
+    {
+        Fixture fixture(root / "interrupted-confirmation-cleanup");
+        fixture.apply();
+        const auto child = fork();
+        assert(child >= 0);
+        if (!child) {
+            fault_process = getpid();
+            crash_after_native_cleanup = true;
+            fixture.confirm();
+            _exit(88);
+        }
+        int status;
+        assert(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+               WEXITSTATUS(status) == 77);
+        assert(!std::filesystem::exists(fixture.cache / "previous-native"));
+        assert(j::boolean(j::field(
+            j::parse(ct::read_file(fixture.cache / "transaction.json", u::MaxMetadata)).get(),
+            "healthy")));
+        fixture.confirm();
+        assert(!std::filesystem::exists(fixture.cache / "transaction.json"));
     }
     {
         Fixture fixture(root / "rollback");

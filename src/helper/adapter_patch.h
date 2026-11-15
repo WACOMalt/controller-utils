@@ -1,6 +1,7 @@
 #pragma once
 #include "bootstrap.h"
 #include "platform/json.h"
+#include <string>
 
 namespace ct::helper {
 struct AdapterSite {
@@ -10,7 +11,8 @@ struct AdapterSite {
 struct AdapterLayout {
     std::vector<AdapterSite> sites;
     Bytes loader, cave_original;
-    static AdapterLayout from_json(json_object *manifest, const Bytes &loader);
+    static AdapterLayout from_json(json_object *manifest, const Bytes &loader,
+                                   const std::string &runtime);
 };
 class AdapterPatch {
     PatchMemory &memory_;

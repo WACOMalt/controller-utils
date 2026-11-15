@@ -10,6 +10,7 @@
 #include "interaction/gestures.h"
 #include "platform/json.h"
 #include "steamvr/codec.h"
+#include "steamvr/steam_ui_transport.h"
 #include "tracking/acquisition.h"
 #include "tracking/math.h"
 #include "tracking/native_pose.h"
@@ -146,6 +147,25 @@ j::Value replay(json_object *request) {
         return session_replay::replay(request);
     if (j::string(j::field(request, "component")) == "input_control")
         return input_replay::replay(request);
+    if (j::string(j::field(request, "component")) == "steam_ui_transport") {
+        const auto before = update_client_replay::descriptors();
+        j::Value result(json_object_new_object()), replies(json_object_new_array());
+        const auto connections = j::integer(j::field(request, "connections"));
+        const auto count = j::integer(j::field(request, "requests"));
+        if (connections < 1 || connections > 100 || count < 1 || count > 100)
+            throw std::invalid_argument("Invalid Steam UI transport test size");
+        for (int i = 0; i < connections; ++i) {
+            auto connection = ct::connect_steam_ui();
+            ct::SteamUiRequest update{"TEST1234", "OWNER"};
+            update.enabled = true;
+            for (int n = 0; n < count; ++n)
+                json_object_array_add(replies.get(), connection->renew(update).release());
+        }
+        set(result.get(), "replies", replies.release());
+        set(result.get(), "fds_before", json_object_new_uint64(before));
+        set(result.get(), "fds_after", json_object_new_uint64(update_client_replay::descriptors()));
+        return result;
+    }
     const auto component = j::string(j::field(request, "component"));
     auto steps = j::field(request, "steps");
     j::Value results(json_object_new_array());

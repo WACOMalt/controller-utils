@@ -67,7 +67,11 @@ def stage(destination):
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("xb") as output:
             output.write(read_source(source))
-    requirements = json.loads(read_source(ROOT / "driver/runtime.json", 65536))
+    layout = json.loads(read_source(ROOT / "driver/native_layout.json", 65536))
+    requirements = {
+        "backend": "native-tracker",
+        "runtime": {"XRService": layout["runtimes"]["beta"]["xr_sha256"]},
+    }
     for field, directory, names in (
         ("driver", "native-driver", DRIVER_FILES),
         ("helper", "compatibility", HELPER_FILES),

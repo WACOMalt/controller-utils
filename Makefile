@@ -5,7 +5,7 @@ RUFF ?= ruff
 CLANG_FORMAT ?= clang-format
 FORMAT_SOURCES := $(wildcard driver/*.cpp driver/*.h tools/*.cpp src/*/*.js tests/*.cpp tests/*.h tests/*.js)
 NATIVE_SOURCES := $(filter-out src/app/main.cpp src/helper/main.cpp src/update/launcher_main.cpp src/update/installer_main.cpp src/update/installer.cpp src/update/setup.cpp src/ui/renderer.cpp,$(wildcard src/app/*.cpp src/ui/*.cpp src/controller/*.cpp src/tracking/*.cpp src/interaction/*.cpp src/platform/*.cpp src/platform/linux/*.cpp src/steamvr/*.cpp src/helper/*.cpp src/update/*.cpp))
-NATIVE_LIBS := $(shell pkg-config --libs json-c libcrypto libunwind-ptrace libcurl libarchive) -ldl -pthread
+NATIVE_LIBS := $(shell pkg-config --libs json-c libcrypto libunwind-ptrace libcurl libarchive libsystemd) -ldl -pthread
 HELPER_LIBS := $(shell pkg-config --libs json-c libcrypto libunwind-ptrace) -ldl -pthread
 DRIVER_PROFILE_SOURCES := driver/compatibility_profile.cpp src/update/profile.cpp src/update/signature.cpp src/platform/json.cpp src/platform/linux/files.cpp src/platform/linux/resource.cpp src/platform/linux/protected_directory.cpp src/platform/linux/records.cpp src/platform/linux/process.cpp src/tracking/backend.cpp
 NATIVE_OBJECTS := $(patsubst %.cpp,build/native/%.o,$(NATIVE_SOURCES))
@@ -13,7 +13,7 @@ HELPER_SOURCES := $(filter src/helper/%,$(NATIVE_SOURCES)) src/platform/json.cpp
 HELPER_OBJECTS := $(patsubst %.cpp,build/native/%.o,$(HELPER_SOURCES))
 APP_SOURCES := $(filter-out src/helper/% src/platform/linux/process.cpp src/update/launcher.cpp,$(NATIVE_SOURCES))
 APP_OBJECTS := $(patsubst %.cpp,build/native/%.o,$(APP_SOURCES)) build/native/src/ui/renderer.o
-APP_LIBS := $(shell pkg-config --libs json-c libcrypto libcurl libarchive egl gl cairo fontconfig) -ldl -pthread
+APP_LIBS := $(shell pkg-config --libs json-c libcrypto libcurl libarchive egl gl cairo fontconfig libsystemd) -ldl -pthread
 LAUNCHER_SOURCES := src/app/instance.cpp src/app/settings.cpp src/tracking/backend.cpp src/platform/json.cpp src/platform/linux/resource.cpp src/platform/linux/files.cpp src/platform/linux/protected_directory.cpp src/platform/linux/records.cpp src/update/metadata.cpp src/update/signature.cpp src/update/compatibility.cpp src/update/archive.cpp src/update/directories.cpp src/update/state.cpp src/update/transaction.cpp src/update/launcher.cpp
 LAUNCHER_OBJECTS := $(patsubst %.cpp,build/native/%.o,$(LAUNCHER_SOURCES))
 INSTALLER_OBJECTS := build/native/src/update/installer.o build/native/src/update/setup.o build/native/src/update/repair.o
@@ -24,6 +24,7 @@ NATIVE_TESTS := calibration_test native_core_test controller_device_test control
 NATIVE_TESTS += resilience_validation_test resilience_validation_tail_test resilience_validation_module_test resilience_gates_test resilience_maintenance_profiles resilience_maintenance_client resilience_maintenance_repair
 NATIVE_TESTS += public_interfaces_test startup_recovery_test
 NATIVE_TESTS += input_gates_test
+NATIVE_TESTS += steam_os_channel_test
 SANITIZE_TESTS := $(NATIVE_TESTS) native_tracker_test native_queue_startup_test update_installer_test update_setup_test
 FORMAT_SOURCES += $(wildcard src/*/*.cpp src/*/*.h src/*/*/*.cpp src/*/*/*.h)
 
@@ -108,6 +109,7 @@ check: build/controller-utils-updater build/update_setup_test check-arm-loader b
 	./build/xr_backend_test
 	./build/discovery_test
 	./build/input_gates_test
+	./build/steam_os_channel_test
 	./build/native_bridge_test
 	./build/native_bridge_recovery_test
 	./build/native_queue_startup_test
@@ -137,7 +139,7 @@ check-format:
 
 build/native/%.o: %.cpp Makefile
 	mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -pthread $(shell pkg-config --cflags json-c libcrypto libunwind-ptrace libcurl libarchive) -MMD -MP -c $< -o $@
+	$(CXX) $(CXXFLAGS) -pthread $(shell pkg-config --cflags json-c libcrypto libunwind-ptrace libcurl libarchive libsystemd) -MMD -MP -c $< -o $@
 
 build/native/src/steamvr/steam_ui_transport.o build/sanitize/src/steamvr/steam_ui_transport.o: build/input_filter_js.h
 
@@ -276,12 +278,15 @@ build/discovery_test: tests/discovery_test.cpp tests/process_image.h $(NATIVE_OB
 build/input_gates_test: tests/input_gates_test.cpp $(NATIVE_OBJECTS)
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $^ -o $@ $(NATIVE_LIBS)
 
+build/steam_os_channel_test: tests/steam_os_channel_test.cpp $(NATIVE_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $^ -o $@ $(NATIVE_LIBS)
+
 -include $(NATIVE_OBJECTS:.o=.d) $(INSTALLER_OBJECTS:.o=.d) $(patsubst build/native/%,build/sanitize/%,$(INSTALLER_OBJECTS:.o=.d))
 -include $(SANITIZE_OBJECTS:.o=.d)
 
 build/sanitize/%.o: %.cpp Makefile
 	mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -pthread $(SANITIZE_FLAGS) $(shell pkg-config --cflags json-c libcrypto libunwind-ptrace libcurl libarchive) -MMD -MP -c $< -o $@
+	$(CXX) $(CXXFLAGS) -pthread $(SANITIZE_FLAGS) $(shell pkg-config --cflags json-c libcrypto libunwind-ptrace libcurl libarchive libsystemd) -MMD -MP -c $< -o $@
 
 build/sanitize/native_replay: | build/fake_dns.so
 build/sanitize/native_replay: tests/filter_fixture.h tests/input_control_replay.h tests/session_replay.h tests/app_replay.h tests/download_replay.h tests/update_client_replay.h tests/acquisition_replay.h tests/fake_controller.h tests/fake_native_queue.h
@@ -338,6 +343,7 @@ check-sanitize: build/sanitize/native_replay $(addprefix build/sanitize/,$(SANIT
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 CONTROLLER_UTILS_REPLAY=$(CURDIR)/build/sanitize/native_replay python3 -m unittest discover -s tests -p test_behavior.py -v
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 CONTROLLER_UTILS_REPLAY=$(CURDIR)/build/sanitize/native_replay python3 -m unittest discover -s tests -p test_native_download.py -v
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 CONTROLLER_UTILS_REPLAY=$(CURDIR)/build/sanitize/native_replay python3 -m unittest discover -s tests -p test_native_update_client.py -v
+	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 CONTROLLER_UTILS_REPLAY=$(CURDIR)/build/sanitize/native_replay python3 -m unittest discover -s tests -p test_steam_ui_transport.py -v
 
 build/dashboard_test: tests/dashboard_test.cpp src/ui/messages.cpp src/ui/messages.h src/platform/json.cpp src/ui/dashboard.h src/ui/alignment.h src/ui/pointer.h src/ui/button_glyphs.h src/ui/vr.h src/ui/body_pose.h src/interaction/pointer_math.h src/interaction/pose_math.h src/ui/gaze.h third_party/openvr/openvr.h
 	mkdir -p build

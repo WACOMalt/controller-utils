@@ -1,4 +1,5 @@
 #include "helper/package.h"
+#include "steamvr/compatibility.h"
 #include "platform/linux/files.h"
 #include <cassert>
 #include <cstring>
@@ -70,6 +71,12 @@ template <class Function> void rejects(Function fn, const std::string &text = ""
 int main() {
     using namespace ct;
     Fixture fixture;
+    for (const auto fingerprint : steamvr::compatibility::XrServiceHashes) {
+        helper::NativePackage package(fingerprint, fixture.root, getuid());
+        package.verify({});
+    }
+    rejects([&] { helper::NativePackage package(std::string(64, '0'), fixture.root, getuid()); },
+            "unsupported");
     ProtectedDirectory directory(fixture.root, getuid());
     auto file = directory.file("loader.bin", 1104);
     assert(lseek(file.get(), 2, SEEK_SET) == 2);
@@ -93,7 +100,8 @@ int main() {
     rejects([&] { directory.file("loader.bin", 1104); });
     assert(!chmod((fixture.root / "loader.bin").c_str(), 0600));
     {
-        helper::NativePackage package(fixture.root, getuid());
+        helper::NativePackage package(steamvr::compatibility::XrServiceHashes[0], fixture.root,
+                                      getuid());
         package.verify({});
         struct stat info{};
         assert(!stat((fixture.root / "libnative_tracker.so").c_str(), &info));
@@ -120,12 +128,21 @@ int main() {
         auto manifest = json::parse(read_file(fixture.root / "manifest.json", 16384));
         json_object_object_add(manifest.get(), "extra.py", json_object_new_string("invalid"));
         save(fixture.root / "manifest.json", json::encode(manifest.get()));
-        rejects([&] { helper::NativePackage package(fixture.root, getuid()); },
-                "Unexpected adapter payload");
+        rejects(
+            [&] {
+                helper::NativePackage package(steamvr::compatibility::XrServiceHashes[0],
+                                              fixture.root, getuid());
+            },
+            "Unexpected adapter payload");
     }
     fixture.stage();
     save(fixture.root / "loader.bin", std::string(fixture.loader.size(), 'x'));
-    rejects([&] { helper::NativePackage package(fixture.root, getuid()); }, "checksum mismatch");
+    rejects(
+        [&] {
+            helper::NativePackage package(steamvr::compatibility::XrServiceHashes[0], fixture.root,
+                                          getuid());
+        },
+        "checksum mismatch");
     fixture.stage();
     fixture.library[EI_DATA] = ELFDATA2MSB;
     auto layout = json::parse(fixture.adapter);
@@ -133,7 +150,12 @@ int main() {
                            json_object_new_string(digest(fixture.library).c_str()));
     fixture.adapter = json::encode(layout.get());
     fixture.stage();
-    rejects([&] { helper::NativePackage package(fixture.root, getuid()); }, "little-endian ARM64");
+    rejects(
+        [&] {
+            helper::NativePackage package(steamvr::compatibility::XrServiceHashes[0], fixture.root,
+                                          getuid());
+        },
+        "little-endian ARM64");
     {
         const auto linked =
             fixture.root.parent_path() / (fixture.root.filename().string() + "-link");

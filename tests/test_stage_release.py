@@ -29,7 +29,7 @@ class StageReleaseTest(unittest.TestCase):
             "LICENSE",
             "third_party/openvr/LICENSE",
             "assets/update-public.pem",
-            "driver/runtime.json",
+            "driver/native_layout.json",
             *stage.PACKAGE_FILES,
             *("assets/" + name for name in stage.ASSETS),
             *("build/native-driver/" + name for name in stage.DRIVER_FILES),
@@ -41,7 +41,9 @@ class StageReleaseTest(unittest.TestCase):
             file = self.root / name
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_bytes(b"regular source")
-        (self.root / "driver/runtime.json").write_text(json.dumps({"backend": "native-tracker"}))
+        (self.root / "driver/native_layout.json").write_text(
+            json.dumps({"runtimes": {"beta": {"xr_sha256": "a" * 64}}})
+        )
 
     def test_staging_regular_sources_preserves_checksums(self):
         self.fixture()

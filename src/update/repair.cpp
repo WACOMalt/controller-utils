@@ -165,13 +165,16 @@ void record_repair_evidence(const ProtectedDirectory &native, const std::string 
     match_updater(native, parsed);
     write_record(native, Evidence, record, 0644);
 }
-Release verify_repair_updater(const ProtectedDirectory &native, const std::string &trusted_key) {
+Metadata verify_native_evidence(const ProtectedDirectory &native, const std::string &trusted_key) {
     const auto record = read_record(native, Evidence, MaxMetadata + 64);
     if (!record)
         throw std::runtime_error("Installed updater has no signed evidence");
-    const auto parsed = evidence(*record, trusted_key);
+    auto parsed = evidence(*record, trusted_key);
     match_updater(native, parsed);
-    return parsed.release;
+    return parsed;
+}
+Release verify_repair_updater(const ProtectedDirectory &native, const std::string &trusted_key) {
+    return verify_native_evidence(native, trusted_key).release;
 }
 RepairStatus inspect_repair(const UpdateInstallation &installation, const SetupPolicies &policies,
                             const std::string &trusted_key) {

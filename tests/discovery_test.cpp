@@ -39,8 +39,7 @@ int main(int argc, char **argv) {
     ready(first);
     const auto spec = image.spec(first.pid());
     const auto path = spec.executable.string();
-    const ct::steamvr::compatibility::Binary binary{"discovery-test", path.c_str(),
-                                                    spec.sha256.c_str()};
+    const ct::steamvr::compatibility::Binary binary{"discovery-test", path.c_str()};
     assert(ct::helper::find_process(binary, false, getuid()) == first.pid());
     rejects([&] { ct::helper::find_process(binary, false, getuid() + 1); }, true);
     rejects([&] { ct::helper::find_process(binary, true, getuid()); }, true);

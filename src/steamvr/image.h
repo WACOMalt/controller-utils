@@ -170,7 +170,7 @@ class Image {
             throw std::runtime_error("Native mapped tail is unavailable");
         return result;
     }
-    uintptr_t unique(const std::vector<uint8_t> &pattern) const {
+    std::optional<uintptr_t> find_unique(const std::vector<uint8_t> &pattern) const {
         const auto text = section(".text");
         if (!(text.sh_flags & SHF_EXECINSTR) || (text.sh_flags & SHF_WRITE) || pattern.empty())
             throw std::runtime_error("Invalid native code section");
@@ -182,6 +182,10 @@ class Image {
                     throw std::runtime_error("Ambiguous native instruction signature");
                 result = text.sh_addr + i;
             }
+        return result;
+    }
+    uintptr_t unique(const std::vector<uint8_t> &pattern) const {
+        const auto result = find_unique(pattern);
         if (!result)
             throw std::runtime_error("Native instruction signature is unavailable");
         return *result;

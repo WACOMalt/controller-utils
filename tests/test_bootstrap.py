@@ -112,19 +112,22 @@ class BootstrapTest(unittest.TestCase):
                     )
         self.assertFalse((self.root / "escape").exists())
 
-    def download_release(self, tamper_signature=False):
+    def download_release(self, tamper_signature=False, channel="beta"):
         calls = []
 
         def download(url, destination, limit):
             calls.append((url, limit))
-            name = url.rsplit("/", 1)[1]
+            name = url.rsplit("/", 1)[1].replace("latest-stable", "latest")
             data = (self.feed / name).read_bytes()
             if tamper_signature and name == "latest.sig":
                 data = b"x" * 64
             self.assertLessEqual(len(data), limit)
             destination.write_bytes(data)
 
-        with patch.object(bootstrap, "download", side_effect=download):
+        with (
+            patch.object(bootstrap, "download", side_effect=download),
+            patch.object(bootstrap, "steam_os_channel", return_value=channel),
+        ):
             try:
                 feed = bootstrap.download_release(self.root / "download", self.public)
             finally:
@@ -147,6 +150,67 @@ class BootstrapTest(unittest.TestCase):
         installer = bootstrap.verify_package(feed, self.root / "verified", self.public)
         self.assertTrue((installer / "install.sh").is_file())
 
+    def test_stable_release_uses_stable_metadata_and_version_pinned_signature(self):
+        feed = self.download_release(channel="stable")
+        self.assertEqual(
+            self.downloads,
+            [
+                (bootstrap.RELEASES + "latest/download/latest-stable.json", 65536),
+                (bootstrap.RELEASES + "download/v0.1.0/latest-stable.sig", 64),
+                (
+                    bootstrap.RELEASES + "download/v0.1.0/" + self.artifact.name,
+                    self.metadata["size"],
+                ),
+            ],
+        )
+        bootstrap.verify_package(feed, self.root / "verified-stable", self.public)
+
+    def test_only_supported_frame_channels_are_accepted(self):
+        for branch in ("stable", "beta", "preview", "main", "rc", "", "rel"):
+            with self.subTest(branch=branch):
+                with patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, "vr\n"),
+                        subprocess.CompletedProcess([], 0, branch + "\n"),
+                    ],
+                ) as run:
+                    if branch in ("stable", "beta"):
+                        self.assertEqual(bootstrap.steam_os_channel(), branch)
+                    else:
+                        with self.assertRaises(ValueError):
+                            bootstrap.steam_os_channel()
+                    self.assertEqual(
+                        run.call_args.args[0], ["/usr/bin/atomupd-manager", "tracked-branch"]
+                    )
+                    self.assertEqual(run.call_args.kwargs["timeout"], 3)
+        with patch.object(
+            bootstrap.subprocess,
+            "run",
+            side_effect=[
+                subprocess.CompletedProcess([], 0, "deck\n"),
+                subprocess.CompletedProcess([], 0, "stable\n"),
+            ],
+        ):
+            with self.assertRaises(ValueError):
+                bootstrap.steam_os_channel()
+
+    def test_channel_detection_failure_prevents_downloads(self):
+        for error in (
+            subprocess.TimeoutExpired("atomupd-manager", 3),
+            subprocess.CalledProcessError(1, "atomupd-manager"),
+            FileNotFoundError("atomupd-manager"),
+        ):
+            with (
+                self.subTest(error=error),
+                patch.object(bootstrap.subprocess, "run", side_effect=error),
+                patch.object(bootstrap, "download") as download,
+            ):
+                with self.assertRaises(type(error)):
+                    bootstrap.download_release(self.root / "undetected", self.public)
+                download.assert_not_called()
+
     def test_invalid_signature_prevents_archive_download(self):
         with self.assertRaises(subprocess.CalledProcessError):
             self.download_release(tamper_signature=True)
@@ -162,7 +226,10 @@ class BootstrapTest(unittest.TestCase):
                     self.assertEqual(url, bootstrap.RELEASES + "latest/download/latest.json")
                     destination.write_text(json.dumps(metadata))
 
-                with patch.object(bootstrap, "download", side_effect=download) as request:
+                with (
+                    patch.object(bootstrap, "download", side_effect=download) as request,
+                    patch.object(bootstrap, "steam_os_channel", return_value="beta"),
+                ):
                     with self.assertRaises(ValueError):
                         bootstrap.download_release(
                             self.root / ("invalid-" + str(index)), self.public

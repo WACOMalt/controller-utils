@@ -111,6 +111,17 @@ class NativeReleaseTest(unittest.TestCase):
         metadata = json.loads((self.feed / "latest.json").read_text())
         self.assertEqual(metadata["schema"], 5)
         self.assertEqual(metadata["requirements"], self.requirements)
+        stable = json.loads((self.feed / "latest-stable.json").read_text())
+        self.assertEqual(stable["artifact"], metadata["artifact"])
+        self.assertEqual(stable["sha256"], metadata["sha256"])
+        self.assertEqual(stable["size"], metadata["size"])
+        self.assertEqual(stable["sequence"], metadata["sequence"])
+        self.assertEqual(stable["requirements"]["driver"], metadata["requirements"]["driver"])
+        self.assertEqual(stable["requirements"]["helper"], metadata["requirements"]["helper"])
+        profiles = json.loads((ROOT / "driver/native_layout.json").read_text())["runtimes"]
+        self.assertEqual(
+            stable["requirements"]["runtime"], {"XRService": profiles["stable"]["xr_sha256"]}
+        )
         with tarfile.open(result["archive"]) as archive:
             names = archive.getnames()
             self.assertEqual(archive.extractfile("LICENSE").read(), b"MIT test notice")
@@ -122,6 +133,18 @@ class NativeReleaseTest(unittest.TestCase):
             public.write_bytes(archive.extractfile("assets/update-public.pem").read())
         self.assertEqual(len(names), result["files"])
         self.assertEqual(self.check(public, self.base / "check").returncode, 0)
+        subprocess.run(
+            [
+                str(ROOT / "build/release_check"),
+                "--metadata",
+                str(self.feed / "latest-stable.json"),
+                str(self.feed / "latest-stable.sig"),
+                str(public),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
         manifest = self.feed / "latest.json"
         manifest.write_text(manifest.read_text() + " ")
         self.assertNotEqual(self.check(public, self.base / "bad").returncode, 0)

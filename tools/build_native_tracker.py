@@ -10,13 +10,14 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-pinned = re.search(
-    r'XrService\s*\{\s*"[^"]+",\s*"[^"]+",\s*"([a-f0-9]{64})"',
+pins = re.search(
+    r"XrServiceHashes\s*\{(.*?)\};",
     (ROOT / "src/steamvr/compatibility.h").read_text(),
+    re.S,
 )
-if not pinned:
-    raise ValueError("Missing pinned XRService fingerprint")
-XR_SHA256 = pinned.group(1)
+if not pins:
+    raise ValueError("Missing pinned XRService fingerprints")
+XR_HASHES = set(re.findall(r'"([a-f0-9]{64})"', pins.group(1)))
 CAVE, CONTROL = 0x315ABB0, 0x343FF60
 CAVE_LIMIT = 0x315B000
 LIBRARY = "/var/lib/controllertracking/native-tracker/libnative_tracker.so"
@@ -188,15 +189,29 @@ def pinned_bytes(binary, address, size):
 
 def build(output, xrservice=None):
     layout = json.loads((ROOT / "driver/native_layout.json").read_text())
-    if layout["xr_sha256"] != XR_SHA256 or layout["cave"] != CAVE:
+    runtimes = layout["runtimes"]
+    if (
+        set(runtimes) != {"stable", "beta"}
+        or {entry["xr_sha256"] for entry in runtimes.values()} != XR_HASHES
+        or layout["cave"] != CAVE
+    ):
         raise ValueError("Native layout does not match the runtime pin")
+    caves = {}
+    for entry in runtimes.values():
+        fingerprint, cave = entry["xr_sha256"], entry["cave_original"]
+        if fingerprint in caves and caves[fingerprint] != cave:
+            raise ValueError("Runtime profiles disagree about the same executable")
+        caves[fingerprint] = cave
     binary = Path(xrservice).read_bytes() if xrservice else None
-    if binary is not None and hashlib.sha256(binary).hexdigest() != XR_SHA256:
+    fingerprint = (
+        hashlib.sha256(binary).hexdigest() if binary is not None else runtimes["beta"]["xr_sha256"]
+    )
+    if fingerprint not in XR_HASHES:
         raise ValueError("saved XRService hash mismatch")
 
     def original(address, size):
         data = bytes.fromhex(
-            layout["cave_original"] if address == CAVE else layout["sites"][str(address)]
+            caves[fingerprint] if address == CAVE else layout["sites"][str(address)]
         )
         if len(data) < size:
             raise ValueError("Audited native layout is too short")
@@ -308,14 +323,15 @@ def build(output, xrservice=None):
         check=True,
     )
     manifest = {
-        "version": 1,
-        "xr_sha256": XR_SHA256,
+        "version": 2,
         "control": CONTROL,
         "cave": CAVE,
         "library_path": LIBRARY,
         "loader_sha256": hashlib.sha256(loader).hexdigest(),
         "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
-        "cave_original": original(CAVE, len(loader)).hex(),
+        "runtime_originals": {
+            key: bytes.fromhex(cave)[: len(loader)].hex() for key, cave in caves.items()
+        },
         "sites": [
             {
                 "address": site,
@@ -326,6 +342,11 @@ def build(output, xrservice=None):
             for i, (site, original) in enumerate(zip(SITES, originals))
         ],
     }
+    original(CAVE, len(loader))
+    if any(
+        len(bytes.fromhex(cave)) != len(loader) for cave in manifest["runtime_originals"].values()
+    ):
+        raise ValueError("Audited native loader padding is too short")
     manifest["sites"].append(
         {
             "address": MODE_SITE,

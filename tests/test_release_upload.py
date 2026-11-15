@@ -67,7 +67,14 @@ class ReleaseUploadTest(unittest.TestCase):
             (root / "bin").mkdir()
             artifact = "controller-utils-0.1.0-5-linuxarm64.tar.gz"
             (root / "dist/latest.json").write_text(json.dumps({"artifact": artifact}))
-            for name in (artifact, "latest.sig", "SHA256SUMS", "unrelated-secret.txt"):
+            for name in (
+                artifact,
+                "latest.sig",
+                "latest-stable.json",
+                "latest-stable.sig",
+                "SHA256SUMS",
+                "unrelated-secret.txt",
+            ):
                 (root / "dist" / name).write_text("fixture")
             gh = root / "bin/gh"
             gh.write_text(
@@ -103,6 +110,8 @@ class ReleaseUploadTest(unittest.TestCase):
                     "dist/" + artifact,
                     "dist/latest.json",
                     "dist/latest.sig",
+                    "dist/latest-stable.json",
+                    "dist/latest-stable.sig",
                     "dist/SHA256SUMS",
                     "--clobber",
                 ],

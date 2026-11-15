@@ -9,7 +9,7 @@
 #include <string>
 
 namespace ct::helper {
-GateLayout resolve_gate_reviewed(GateKind, const std::string &, const char *);
+GateLayout resolve_gate_reviewed(GateKind, const std::string &, const char *, unsigned = 11);
 }
 
 namespace {
@@ -135,26 +135,32 @@ int main() {
     rejects([&] { tail_image.mapped_tail(tail_cave, 60, 4096); });
     rejects([] { place_gate(GateKind::Input, 0, 0x8000000); });
     rejects([] { place_gate(GateKind::Input, UINTPTR_MAX - 4, 0); });
-    for (const auto slot : {0x13cu, 0x14cu}) {
+    for (const auto &shape : {std::pair{0x13cu, 11u}, {0x14cu, 11u}, {0x14cu, 19u}}) {
+        const auto slot = shape.first, beam_register = shape.second;
         auto bytes = image(0x11c0, 0x40, GateKind::Beam);
         for (size_t at = 0x1000; at < 0x1400; at += 4)
             put(bytes, at, uint32_t(0xd503201f));
         put(bytes, 0x1000, uint32_t(0xd10003ff | ((slot + 0x214) << 10)));
         put(bytes, 0x1068, uint32_t(0x12800000));
         put(bytes, 0x106c, uint32_t(0xb90003e0 | ((slot / 4) << 10)));
-        const auto prototype = place_gate(GateKind::Beam, 0x1200, 0x2850);
+        const auto prototype = place_gate(GateKind::Beam, 0x1200, 0x2850, beam_register);
         std::memcpy(bytes.data() + 0x1200, prototype.original.data(), 4);
         std::memcpy(bytes.data() + 0x1204, prototype.following.data(), 8);
         const auto body_hash = ct::steamvr::code_signature(bytes.data() + 0x1000, 0x400);
         const auto context_hash = digest(bytes, 0x11c0);
         const std::vector<BeamContract> contracts{
-            {0x200, 0x400, body_hash.c_str(), context_hash.c_str()}};
+            {0x200, 0x400, body_hash.c_str(), context_hash.c_str(), beam_register}};
         const auto resolved = resolve_beam_reviewed(bytes, contracts);
         std::memcpy(&branch, resolved.payload.data() + 16, 4);
         assert(branch == (0xb94003f0 | (((slot + 32) / 4) << 10)));
+        std::memcpy(&branch, resolved.payload.data() + 12, 4);
+        assert(branch == (0xbd441280 | beam_register));
+        std::memcpy(&branch, resolved.payload.data() + 36, 4);
+        assert(branch == (0x1e2703e0 | beam_register));
         rejects([&] { resolve_gate_layout(static_cast<GateKind>(99), bytes); });
         rejects([&] {
-            resolve_beam_reviewed(bytes, {{0x200, 16388, body_hash.c_str(), context_hash.c_str()}});
+            resolve_beam_reviewed(
+                bytes, {{0x200, 16388, body_hash.c_str(), context_hash.c_str(), beam_register}});
         });
         auto unrelated = bytes;
         unrelated += "unrelated vendor update";
@@ -164,6 +170,10 @@ int main() {
         rejects([&] { resolve_beam_reviewed(altered, contracts); });
         rejects([&] { resolve_beam_reviewed(bytes, {contracts[0], contracts[0]}); });
         altered = bytes;
+        std::memcpy(altered.data() + 0x1500, prototype.original.data(), 4);
+        std::memcpy(altered.data() + 0x1504, prototype.following.data(), 8);
+        rejects([&] { resolve_beam_reviewed(altered, contracts); });
+        altered = bytes;
         altered[0x2850] = 1;
         rejects([&] { resolve_beam_reviewed(altered, contracts); });
         rejects([&] { resolve_beam_reviewed(bytes.substr(0, 0x1200), contracts); });
@@ -171,8 +181,8 @@ int main() {
         put(altered, 0x106c, uint32_t(0xb90003e0 | (0x3ff << 10)));
         const auto invalid_hash = ct::steamvr::code_signature(altered.data() + 0x1000, 0x400);
         rejects([&] {
-            resolve_beam_reviewed(altered,
-                                  {{0x200, 0x400, invalid_hash.c_str(), context_hash.c_str()}});
+            resolve_beam_reviewed(altered, {{0x200, 0x400, invalid_hash.c_str(),
+                                             context_hash.c_str(), beam_register}});
         });
     }
     std::cout << "gate discovery relocation and rejection passed\n";

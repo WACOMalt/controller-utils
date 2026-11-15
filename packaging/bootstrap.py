@@ -155,10 +155,30 @@ def download(url, destination, limit):
     )
 
 
+def steam_os_channel():
+    values = []
+    for option in ("tracked-variant", "tracked-branch"):
+        result = subprocess.run(
+            ["/usr/bin/atomupd-manager", option],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        values.append(result.stdout.strip())
+    variant, branch = values
+    if variant != "vr" or branch not in ("stable", "beta"):
+        raise ValueError("Controller Utils supports Steam Frame's stable and beta OS channels.")
+    return branch
+
+
 def download_release(feed, public_key=PUBLIC_KEY):
+    stable = steam_os_channel() == "stable"
+    manifest = "latest-stable.json" if stable else "latest.json"
+    signature = "latest-stable.sig" if stable else "latest.sig"
     feed.mkdir(mode=0o700)
     print("Downloading the latest Controller Utils release...", flush=True)
-    download(RELEASES + "latest/download/latest.json", feed / "latest.json", 65536)
+    download(RELEASES + "latest/download/" + manifest, feed / "latest.json", 65536)
     with regular(feed / "latest.json", 65536) as source:
         version = json.load(source, object_pairs_hook=unique_object)["version"]
     if not isinstance(version, str) or not re.fullmatch(
@@ -166,7 +186,7 @@ def download_release(feed, public_key=PUBLIC_KEY):
     ):
         raise ValueError("Invalid release version")
     release_url = RELEASES + "download/v" + version + "/"
-    download(release_url + "latest.sig", feed / "latest.sig", 64)
+    download(release_url + signature, feed / "latest.sig", 64)
     metadata = verify_metadata(feed, feed / "authenticated", public_key)
     download(release_url + metadata["artifact"], feed / metadata["artifact"], metadata["size"])
     return feed

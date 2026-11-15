@@ -31,9 +31,10 @@ int main() {
     assert(aarch64_branch(0x8000000, 0) == 0x16000000);
     rejects([] { aarch64_branch(0, 0x8000000); }, "out of range");
     rejects([] { aarch64_branch(1, 4); }, "out of range");
-    for (auto kind : {GateKind::Input, GateKind::Beam}) {
-        const auto layout = kind == GateKind::Input ? place_gate(kind, 0x23c8bc, 0xccc40)
-                                                    : place_gate(kind, 0xd5660, 0x5c6d00);
+    for (const auto &layout : {place_gate(GateKind::Input, 0x23c8bc, 0xccc40),
+                               place_gate(GateKind::Beam, 0xd5660, 0x5c6d00),
+                               place_gate(GateKind::Beam, 0xc529c, 0x5c6d00, 19)}) {
+        const auto kind = layout.kind;
         const auto &binary = kind == GateKind::Input ? ct::steamvr::compatibility::SteamWebHelper
                                                      : ct::steamvr::compatibility::Compositor;
         std::vector<ct::MemoryMapping> mappings{
@@ -201,6 +202,8 @@ int main() {
     }
     rejects([] { place_gate(GateKind::Beam, 0, 0x8000000); }, "out of range");
     rejects([] { place_gate(GateKind::Beam, 0x1001, 0x2000); }, "out of range");
+    rejects([] { place_gate(GateKind::Beam, 0, 0, 20); }, "unsupported native beam register");
+    rejects([] { place_gate(GateKind::Input, 0, 0, 19); }, "unsupported native beam register");
     const auto input = place_gate(GateKind::Input, 0x23c8bc, 0xccc40);
     assert(!gate_resume_pc(input, base, base + input.cave - 4));
     for (size_t offset = 0; offset < 28; offset += 4)

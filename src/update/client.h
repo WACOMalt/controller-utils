@@ -3,6 +3,7 @@
 #include "download.h"
 #include "profiles.h"
 #include "state.h"
+#include "platform/linux/steamos.h"
 #include <mutex>
 #include <thread>
 
@@ -21,6 +22,7 @@ class UpdateClient {
     std::string profile_key_;
     std::function<InstalledRequirements()> installed_;
     std::function<double()> wall_;
+    std::function<SteamOsChannel()> os_channel_;
     History history_;
     std::mutex mutex_;
     std::thread worker_, profile_worker_;
@@ -37,7 +39,8 @@ class UpdateClient {
     UpdateClient(std::filesystem::path application, std::filesystem::path data,
                  std::function<InstalledRequirements()> installed,
                  std::filesystem::path certificates = {}, std::function<double()> wall = {},
-                 ProfileDownload transport = {}, std::string profile_key = {});
+                 ProfileDownload transport = {}, std::string profile_key = {},
+                 std::function<SteamOsChannel()> os_channel = {});
     UpdateClient(const UpdateClient &) = delete;
     UpdateClient &operator=(const UpdateClient &) = delete;
     ~UpdateClient();

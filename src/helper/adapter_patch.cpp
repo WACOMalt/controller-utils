@@ -72,13 +72,13 @@ void validate(const AdapterLayout &layout) {
     }
 }
 } // namespace
-AdapterLayout AdapterLayout::from_json(json_object *manifest, const Bytes &loader) {
-    if (json::integer(json::field(manifest, "version")) != 1 ||
+AdapterLayout AdapterLayout::from_json(json_object *manifest, const Bytes &loader,
+                                       const std::string &runtime) {
+    if (json::integer(json::field(manifest, "version")) != 2 ||
         json::unsigned_integer(json::field(manifest, "control")) != AdapterPatch::Control ||
         json::unsigned_integer(json::field(manifest, "cave")) != AdapterPatch::Cave ||
         json::string(json::field(manifest, "library_path")) != TrackerLibrary ||
-        json::string(json::field(manifest, "xr_sha256")) !=
-            steamvr::compatibility::XrService.sha256)
+        !steamvr::compatibility::supported_xr_service(runtime))
         throw std::invalid_argument("unsupported native adapter layout");
     if (loader.empty() || loader.size() > 1104 || loader.size() % 4)
         throw std::invalid_argument("invalid native adapter loader size");
@@ -87,9 +87,17 @@ AdapterLayout AdapterLayout::from_json(json_object *manifest, const Bytes &loade
         throw std::invalid_argument("native adapter loader checksum mismatch");
     AdapterLayout layout;
     layout.loader = loader;
-    layout.cave_original = hex(json::field(manifest, "cave_original"));
-    if (layout.cave_original.size() != loader.size())
-        throw std::invalid_argument("native loader padding size mismatch");
+    const auto originals = json::field(manifest, "runtime_originals");
+    if (!json_object_is_type(originals, json_type_object) ||
+        json_object_object_length(originals) != int(steamvr::compatibility::XrServiceHashes.size()))
+        throw std::invalid_argument("unsupported native adapter runtimes");
+    for (const auto approved : steamvr::compatibility::XrServiceHashes) {
+        auto cave = hex(json::field(originals, approved));
+        if (cave.size() != loader.size())
+            throw std::invalid_argument("native loader padding size mismatch");
+        if (runtime == approved)
+            layout.cave_original = std::move(cave);
+    }
     auto sites = json::field(manifest, "sites");
     if (json::array_size(sites) != Sites.size())
         throw std::invalid_argument("native adapter site count mismatch");

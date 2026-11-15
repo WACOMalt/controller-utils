@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <grp.h>
 #include <iostream>
+#include <set>
 #include <system_error>
 #include <fcntl.h>
 #include <linux/fs.h>
@@ -60,6 +61,52 @@ std::optional<NativeJournal> journal(const ProtectedDirectory &cache) {
 }
 void save(const ProtectedDirectory &cache, const NativeJournal &record) {
     write_record(cache, "transaction.json", json::encode(record.to_json().get()));
+}
+Release verified_native_release(const ProtectedDirectory &native, const std::string &key) {
+    const auto metadata = verify_native_evidence(native, key);
+    const auto names = helper_files(
+        backend_from_name(json::string(json::field(metadata.requirements.get(), "backend"))));
+    std::set<std::filesystem::path> allowed{".repair-evidence", "native-tracker"};
+    for (const auto &name : names) {
+        const std::filesystem::path relative(name);
+        allowed.insert(relative);
+        ProtectedDirectory directory(relative.parent_path().empty()
+                                         ? native.path()
+                                         : native.path() / relative.parent_path());
+        const auto file = directory.file(relative.filename().string(), MaxContents);
+        if (sha256(file.get()) !=
+            json::string(
+                json::field(json::field(metadata.requirements.get(), "helper"), name.c_str())))
+            throw std::runtime_error("Confirmed native component differs from signed evidence");
+        directory.verify_file(relative.filename().string(), file.get());
+    }
+    for (const auto &entry : std::filesystem::recursive_directory_iterator(native.path()))
+        if (entry.is_symlink() || !allowed.count(entry.path().lexically_relative(native.path())))
+            throw std::runtime_error("Preserve the changed native backup contents for review");
+    native.verify();
+    return metadata.release;
+}
+void retire_confirmed(const UpdateInstallation &installation, const ProtectedDirectory &cache,
+                      const ProtectedDirectory &parent) {
+    const auto record = journal(cache);
+    if (!record || !record->healthy)
+        return;
+    const auto key = read_record(cache, "public.pem", 16384);
+    if (!key)
+        throw std::runtime_error("Native update signing key is unavailable");
+    if (!(verified_native_release(ProtectedDirectory(installation.components.helpers), *key) ==
+          record->release))
+        throw std::runtime_error("Confirmed native release differs from signed evidence");
+    const auto backup = directory_identity(cache, "previous-native");
+    if (backup) {
+        const auto previous =
+            verified_native_release(ProtectedDirectory(cache.path() / "previous-native"), *key);
+        if (previous.sequence >= record->release.sequence)
+            throw std::runtime_error("Preserve the changed native backup release for review");
+        remove_directory(cache, "previous-native", *backup);
+    }
+    parent.verify();
+    erase_record(cache, "transaction.json");
 }
 int application_transaction(const UpdateInstallation &installation, int descriptor, bool activate,
                             bool force, uint64_t recovering = 0) {
@@ -158,9 +205,10 @@ void install_update(const UpdateInstallation &installation, bool confirmation,
     check(flock(lock.get(), LOCK_EX | LOCK_NB), "lock native updater");
     ProtectedDirectory parent(installation.components.helpers.parent_path());
     ProtectedDirectory data(installation.data, installation.user);
+    retire_confirmed(installation, cache, parent);
     if (confirmation) {
         auto record = journal(cache);
-        if (!record || record->healthy)
+        if (!record)
             return;
         const auto application = installation.components.application;
         ProtectedDirectory app(application, installation.user);
@@ -177,6 +225,7 @@ void install_update(const UpdateInstallation &installation, bool confirmation,
         app.verify_file("controller-utils", executable.get());
         record->healthy = true;
         save(cache, *record);
+        retire_confirmed(installation, cache, parent);
         return;
     }
     if (active()) {

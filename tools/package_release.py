@@ -163,7 +163,7 @@ def build(root, requirements, key, output, notes):
         + str(version["sequence"])
         + "-linuxarm64.tar.gz"
     )
-    names = (artifact, "latest.json", "latest.sig")
+    names = (artifact, "latest.json", "latest.sig", "latest-stable.json", "latest-stable.sig")
     if any(os.path.lexists(output / name) for name in names):
         raise ValueError("Use a new output directory, never overwrite a published release")
     with tempfile.TemporaryDirectory(prefix="release-", dir=ROOT / "build") as temporary:
@@ -202,12 +202,30 @@ def build(root, requirements, key, output, notes):
         manifest, signature = directory / "latest.json", directory / "latest.sig"
         manifest.write_text(json.dumps(metadata, sort_keys=True, indent=2) + "\n")
         sign(manifest, signature, key)
+        runtimes = json.loads(read(ROOT / "driver/native_layout.json", 65536))["runtimes"]
+        stable_requirements = {
+            **requirements,
+            "runtime": {"XRService": runtimes["stable"]["xr_sha256"]},
+        }
+        stable_metadata = {**metadata, "requirements": stable_requirements}
+        stable_manifest, stable_signature = (
+            directory / "latest-stable.json",
+            directory / "latest-stable.sig",
+        )
+        stable_manifest.write_text(json.dumps(stable_metadata, sort_keys=True, indent=2) + "\n")
+        sign(stable_manifest, stable_signature, key)
         trust = directory / "public.pem"
         trust.write_bytes(public)
         subprocess.run(
             [str(checker), str(directory), str(trust), str(directory / "verified")],
             check=True,
             timeout=30,
+            stdout=subprocess.PIPE,
+        )
+        subprocess.run(
+            [str(checker), "--metadata", str(stable_manifest), str(stable_signature), str(trust)],
+            check=True,
+            timeout=5,
             stdout=subprocess.PIPE,
         )
         created = []

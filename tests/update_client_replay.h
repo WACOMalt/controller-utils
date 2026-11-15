@@ -35,8 +35,13 @@ inline j::Value replay(json_object *request) {
         std::unique_ptr<ct::update::MaintenanceLock> blocked;
         if (j::boolean(j::field(request, "lease_busy")))
             blocked = std::make_unique<ct::update::MaintenanceLock>(data);
-        ct::update::UpdateClient client(root, data, capture, j::string(j::field(request, "ca")),
-                                        [&] { return now.load(); });
+        ct::update::UpdateClient client(
+            root, data, capture, j::string(j::field(request, "ca")), [&] { return now.load(); }, {},
+            {},
+            [&] {
+                const auto branch = j::find(request, "os_channel");
+                return ct::parse_steam_os_channel(branch ? j::string(branch) : "beta", "vr");
+            });
         const auto poll = [&](bool automatic) {
             const auto started = ct::monotonic_time();
             auto status = client.poll(automatic);

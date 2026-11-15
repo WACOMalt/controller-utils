@@ -106,7 +106,7 @@ int main() {
         fixture.target[0] ^= 1;
         assert(!ct::validate_progress_table(module, fixture.table + 2, 4, digest));
     }
-    {
+    for (const bool stable : {false, true}) {
         struct Fixture {
             char chaperone_name[22] = "18CVRChaperoneClient";
             char provider_name[28] = "N3IPC17PosixSharedMemoryE";
@@ -118,6 +118,10 @@ int main() {
             uint32_t helper[5]{0xf9400000, 0xf9400001, 0xf9400421, 0xaa0103f0, 0xd61f0200};
             uint32_t getter[2]{0xf9400800, 0xd65f03c0};
         } fixture;
+        if (stable) {
+            fixture.accessor[4] = 0x91410000;
+            fixture.accessor[6] = 0x396d1000;
+        }
         fixture.chaperone_type[1] = reinterpret_cast<uintptr_t>(fixture.chaperone_name);
         fixture.provider_type[1] = reinterpret_cast<uintptr_t>(fixture.provider_name);
         fixture.table[1] = reinterpret_cast<uintptr_t>(fixture.chaperone_type);
@@ -127,7 +131,7 @@ int main() {
         fixture.chaperone[0] = reinterpret_cast<uintptr_t>(fixture.table + 2);
         fixture.chaperone[28] = reinterpret_cast<uintptr_t>(fixture.provider);
         fixture.provider[0] = reinterpret_cast<uintptr_t>(fixture.provider_table + 2);
-        std::vector<uint8_t> state(0x43f45);
+        std::vector<uint8_t> state(stable ? 0x40b45 : 0x43f45);
         fixture.provider[2] = reinterpret_cast<uintptr_t>(state.data());
         const auto begin = reinterpret_cast<uintptr_t>(&fixture);
         const auto object = reinterpret_cast<uintptr_t>(fixture.chaperone);

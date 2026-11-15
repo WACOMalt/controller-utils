@@ -14,7 +14,12 @@ SERVICE = Path("/home/steamos/.local/share/systemd/user")
 
 
 def run(*command, **kwargs):
-    return subprocess.run(command, check=True, capture_output=True, text=True, **kwargs)
+    result = subprocess.run(command, capture_output=True, text=True, **kwargs)
+    if result.returncode:
+        raise RuntimeError(
+            f"{command!r} exited {result.returncode}\n{result.stdout}\n{result.stderr}"
+        )
+    return result
 
 
 def write(path, contents, mode=0o644):
@@ -81,8 +86,8 @@ def sandbox(case, directory, parent_namespace):
         for name in names:
             target = source / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / binaries / name, target)
-            target.chmod(0o755)
+            target.touch()
+            bind(ROOT / binaries / name, target)
         shutil.copytree(
             ROOT / "tests/fixtures/update-metadata", source / "tests/fixtures/update-metadata"
         )

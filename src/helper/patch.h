@@ -43,11 +43,12 @@ struct GateLayout {
     size_t index_offset;
     uint32_t index_limit;
 };
-GateLayout place_gate(GateKind kind, uintptr_t site, uintptr_t cave);
+GateLayout place_gate(GateKind kind, uintptr_t site, uintptr_t cave, unsigned beam_register = 11);
 GateLayout resolve_gate_layout(GateKind kind, const std::string &image);
 struct BeamContract {
     size_t before, size;
     const char *signature, *context;
+    unsigned beam_register = 11;
 };
 GateLayout resolve_beam_reviewed(const std::string &image,
                                  const std::vector<BeamContract> &contracts);

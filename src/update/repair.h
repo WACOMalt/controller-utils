@@ -8,6 +8,7 @@ void record_repair_evidence(const ProtectedDirectory &native, const std::string 
                             const std::string &signature, const std::string &trusted_key,
                             const Release &expected);
 Release verify_repair_updater(const ProtectedDirectory &native, const std::string &trusted_key);
+Metadata verify_native_evidence(const ProtectedDirectory &native, const std::string &trusted_key);
 enum class RepairStatus {
     NeedsAuthorization,
     Busy,

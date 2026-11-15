@@ -141,11 +141,11 @@ void Runtime::close() {
         std::rethrow_exception(failure);
 }
 void check_runtime(const std::string &directory) {
-    for (const auto &binary : {steamvr::compatibility::XrService})
-        if (sha256(std::filesystem::path(directory) /
-                   std::filesystem::path(binary.path).lexically_relative("/opt/steamvr")) !=
-            binary.sha256)
-            throw std::runtime_error(std::string(binary.name) +
-                                     " changed. Native protocol must be reverified");
+    const auto &binary = steamvr::compatibility::XrService;
+    if (!steamvr::compatibility::supported_xr_service(
+            sha256(std::filesystem::path(directory) /
+                   std::filesystem::path(binary.path).lexically_relative("/opt/steamvr"))))
+        throw std::runtime_error(std::string(binary.name) +
+                                 " changed. Native protocol must be reverified");
 }
 } // namespace ct

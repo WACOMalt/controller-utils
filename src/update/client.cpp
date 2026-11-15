@@ -39,7 +39,8 @@ json::Value UpdateStatus::to_json() const {
 UpdateClient::UpdateClient(std::filesystem::path application, std::filesystem::path data,
                            std::function<InstalledRequirements()> installed,
                            std::filesystem::path certificates, std::function<double()> wall,
-                           ProfileDownload transport, std::string profile_key)
+                           ProfileDownload transport, std::string profile_key,
+                           std::function<SteamOsChannel()> os_channel)
     : application_(std::move(application)), data_(std::move(data)), version_(release(application_)),
       downloader_(std::move(certificates)),
       transport_(transport ? std::move(transport)
@@ -49,7 +50,8 @@ UpdateClient::UpdateClient(std::filesystem::path application, std::filesystem::p
                                  downloader_.download(url, path, limit, cancel);
                              })),
       profile_key_(profile_key.empty() ? UpdatePublicKey : std::move(profile_key)),
-      installed_(std::move(installed)), wall_(wall ? std::move(wall) : wall_time) {
+      installed_(std::move(installed)), wall_(wall ? std::move(wall) : wall_time),
+      os_channel_(os_channel ? std::move(os_channel) : steam_os_channel) {
     if (!installed_)
         throw std::invalid_argument("Missing installed update compatibility capture");
     std::optional<std::string> error;
@@ -105,8 +107,10 @@ void UpdateClient::fetch(const ProtectedDirectory &cache, bool manual) {
     if (mkdirat(cache.descriptor(), "download", 0700))
         throw std::system_error(errno, std::generic_category(), "create update download stage");
     ProtectedDirectory work(cache.path() / "download", getuid());
+    const bool stable = *url_ == GitHubChannel && os_channel_() == SteamOsChannel::Stable;
     try {
-        transport_(*url_ + "latest.json", work.path() / "latest.json", MaxMetadata, cancel_);
+        transport_(*url_ + (stable ? "latest-stable.json" : "latest.json"),
+                   work.path() / "latest.json", MaxMetadata, cancel_);
     } catch (const std::exception &error) {
         if (std::string(error.what()).find("HTTP 404") == std::string::npos)
             throw;
@@ -119,7 +123,8 @@ void UpdateClient::fetch(const ProtectedDirectory &cache, bool manual) {
         json_object_object_add(version.get(), field,
                                json_object_get(json::field(untrusted.get(), field)));
     const auto pinned = release_url(*url_, Release::from_json(version.get()));
-    transport_(pinned + "latest.sig", work.path() / "latest.sig", 64, cancel_);
+    transport_(pinned + (stable ? "latest-stable.sig" : "latest.sig"), work.path() / "latest.sig",
+               64, cancel_);
     const auto metadata =
         verify_metadata(work.path() / "latest.json", work.path() / "latest.sig",
                         application_ / "assets/update-public.pem",

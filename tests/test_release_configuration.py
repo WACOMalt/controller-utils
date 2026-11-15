@@ -10,18 +10,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReleaseConfigurationTest(unittest.TestCase):
     def test_runtime_profile_matches_native_pins_and_audited_layout(self):
-        runtime = json.loads((ROOT / "driver/runtime.json").read_text())
         layout = json.loads((ROOT / "driver/native_layout.json").read_text())
         pins = (ROOT / "src/steamvr/compatibility.h").read_text()
-        for digest in runtime["runtime"].values():
+        self.assertEqual(set(layout["runtimes"]), {"stable", "beta"})
+        for profile in layout["runtimes"].values():
+            digest = profile["xr_sha256"]
             self.assertRegex(digest, r"^[a-f0-9]{64}$")
             self.assertIn('"' + digest + '"', pins)
-        self.assertEqual(layout["xr_sha256"], runtime["runtime"]["XRService"])
+            self.assertGreater(len(bytes.fromhex(profile["cave_original"])), 512)
+        self.assertEqual(
+            {entry["xr_sha256"] for entry in layout["runtimes"].values()},
+            set(re.findall(r'"([a-f0-9]{64})"', pins)),
+        )
         self.assertEqual(len(layout["sites"]), 13)
         for original in layout["sites"].values():
             self.assertEqual(len(bytes.fromhex(original)), 16)
-        self.assertGreater(len(bytes.fromhex(layout["cave_original"])), 512)
-        self.assertEqual(runtime["backend"], "native-tracker")
 
     def test_github_channel_and_installer_syntax(self):
         channel = json.loads((ROOT / "assets/update-channel.json").read_text())

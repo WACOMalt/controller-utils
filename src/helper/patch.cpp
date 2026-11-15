@@ -81,7 +81,7 @@ uint32_t aarch64_branch(uintptr_t source, uintptr_t destination) {
         destination >= source ? int64_t(destination - source) : -int64_t(source - destination);
     return 0x14000000u | (uint32_t(delta / 4) & 0x3ffffffu);
 }
-GateLayout place_gate(GateKind kind, uintptr_t site, uintptr_t cave) {
+GateLayout place_gate(GateKind kind, uintptr_t site, uintptr_t cave, unsigned beam_register) {
     if (site > UINTPTR_MAX - 12 || cave > UINTPTR_MAX - 60)
         throw std::invalid_argument("native gate address overflow");
     GateLayout layout;
@@ -109,6 +109,15 @@ GateLayout place_gate(GateKind kind, uintptr_t site, uintptr_t cave) {
                   16};
     else
         throw std::invalid_argument("unknown native gate kind");
+    if (beam_register != 11 && (kind != GateKind::Beam || beam_register != 19))
+        throw std::invalid_argument("unsupported native beam register");
+    if (beam_register == 19) {
+        layout.original = hex("931244bd");
+        layout.following = hex("8b09211e2a0a211e");
+        std::copy(layout.original.begin(), layout.original.end(), layout.payload.begin() + 12);
+        const auto clear = word(0x1e2703f3);
+        std::copy(clear.begin(), clear.end(), layout.payload.begin() + 36);
+    }
     layout.redirect = word(aarch64_branch(site, cave));
     auto relocate = [&](size_t offset, uintptr_t target) {
         const auto branch = aarch64_branch(cave + offset, site + target);
@@ -121,8 +130,9 @@ GateLayout place_gate(GateKind kind, uintptr_t site, uintptr_t cave) {
         relocate(52, 4);
     return layout;
 }
-GateLayout resolve_gate_reviewed(GateKind kind, const std::string &bytes, const char *expected) {
-    const auto prototype = place_gate(kind, 0, 0);
+GateLayout resolve_gate_reviewed(GateKind kind, const std::string &bytes, const char *expected,
+                                 unsigned beam_register = 11) {
+    const auto prototype = place_gate(kind, 0, 0, beam_register);
     auto pattern = prototype.original;
     pattern.insert(pattern.end(), prototype.following.begin(), prototype.following.end());
     steamvr::Image image(bytes);
@@ -143,17 +153,20 @@ GateLayout resolve_gate_reviewed(GateKind kind, const std::string &bytes, const 
                           : image.mapped_tail(cave, prototype.payload.size(), size_t(page_size));
     if (!std::all_of(data, data + prototype.payload.size(), [](char byte) { return !byte; }))
         throw std::runtime_error("native gate padding is occupied");
-    return place_gate(kind, site, cave);
+    return place_gate(kind, site, cave, beam_register);
 }
 GateLayout resolve_beam_reviewed(const std::string &bytes,
                                  const std::vector<BeamContract> &contracts) {
     steamvr::Image image(bytes);
-    auto pattern = place_gate(GateKind::Beam, 0, 0).original;
-    const auto following = place_gate(GateKind::Beam, 0, 0).following;
-    pattern.insert(pattern.end(), following.begin(), following.end());
-    const auto site = image.unique(pattern);
     std::optional<GateLayout> result;
     for (const auto &contract : contracts) {
+        const auto prototype = place_gate(GateKind::Beam, 0, 0, contract.beam_register);
+        auto pattern = prototype.original;
+        pattern.insert(pattern.end(), prototype.following.begin(), prototype.following.end());
+        const auto found = image.find_unique(pattern);
+        if (!found)
+            continue;
+        const auto site = *found;
         if (site < contract.before || !contract.signature || contract.size < 0x70 ||
             contract.size > 16384 || contract.size % 4 || contract.before > contract.size - 12)
             continue;
@@ -171,7 +184,8 @@ GateLayout resolve_beam_reviewed(const std::string &bytes,
         if ((frame & 0xffc003ff) != 0xd10003ff || initialize != 0x12800000 ||
             (store & 0xffc003ff) != 0xb90003e0 || slot + 4 > frame_size || slot + 32 > 0x3ffc)
             throw std::runtime_error("native beam stack layout changed");
-        result = resolve_gate_reviewed(GateKind::Beam, bytes, contract.context);
+        result =
+            resolve_gate_reviewed(GateKind::Beam, bytes, contract.context, contract.beam_register);
         const uint32_t load = 0xb94003f0 | (((slot + 32) / 4) << 10);
         std::memcpy(result->payload.data() + 16, &load, 4);
     }
@@ -189,7 +203,9 @@ GateLayout resolve_gate_layout(GateKind kind, const std::string &bytes) {
         bytes, {{0xc30, 8248, "5b41ef23f2f75fcb08bf07951aab21198c1b2e930b6650d56195cc7390f72b98",
                  "0ac3c32eda0053d2026c612513a70f53f5fb152baf761e8bc8a38e34e4ddd3e9"},
                 {0xc38, 8256, "31ba833270ee0fdba8acfdaadce9bd33ecbefc51e80035d822fd1c4a02ec2552",
-                 "274ec840321f1525d5747ee8c3292852111e7d5059a13534f854542e50858de8"}});
+                 "274ec840321f1525d5747ee8c3292852111e7d5059a13534f854542e50858de8"},
+                {0xbcc, 8116, "5b095a997f7fc6d06c29da69988d62a17f7c94fd0882440a79c1d742e85422fb",
+                 "d9018d435580f9b9ac0daba202718e8a9222866cb16e3c0144be1f8a4cb21e71", 19}});
 }
 void validate_gate_mappings(const GateLayout &layout, uintptr_t base,
                             const std::vector<MemoryMapping> &mappings) {

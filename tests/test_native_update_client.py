@@ -271,6 +271,18 @@ class NativeUpdateClientTest(unittest.TestCase):
         self.assertFalse((self.data / "updates/download").exists())
 
     def test_github_redirects_pinned_assets_and_long_lived_release(self):
+        self.github_release()
+        result = self.run_client(
+            [{"op": "check", "manual": True}, {"op": "wait"}, {"op": "activate"}]
+        )
+        self.assertTrue(result["activated"])
+        self.assertEqual(result["release"]["sequence"], 2)
+        requests = [path for path, _ in self.server.requests]
+        self.assertIn("/kallupx/controller-utils/releases/download/v0.1.1/latest.sig", requests)
+        self.assertIn("/kallupx/controller-utils/releases/download/v0.1.1/" + ARTIFACT, requests)
+        self.assertNotIn("/kallupx/controller-utils/releases/latest/download/latest.sig", requests)
+
+    def github_release(self):
         self.channel = "https://github.com/kallupx/controller-utils/releases/latest/download/"
         (self.root / "assets/update-channel.json").write_text(json.dumps({"url": self.channel}))
         preload = str(ROOT / "build/fake_dns.so")
@@ -284,15 +296,57 @@ class NativeUpdateClientTest(unittest.TestCase):
         self.feed(2)
         self.metadata["expires"] = 0
         self.sign()
+
+    def test_stable_github_release_uses_channel_metadata_and_shared_archive(self):
+        self.github_release()
+        self.server.files["latest-stable.json"] = self.server.files.pop("latest.json")
+        self.server.files["latest-stable.sig"] = self.server.files.pop("latest.sig")
         result = self.run_client(
-            [{"op": "check", "manual": True}, {"op": "wait"}, {"op": "activate"}]
+            [{"op": "check", "manual": True}, {"op": "wait"}, {"op": "activate"}],
+            os_channel="stable",
         )
         self.assertTrue(result["activated"])
         self.assertEqual(result["release"]["sequence"], 2)
         requests = [path for path, _ in self.server.requests]
-        self.assertIn("/kallupx/controller-utils/releases/download/v0.1.1/latest.sig", requests)
+        self.assertIn(
+            "/kallupx/controller-utils/releases/latest/download/latest-stable.json", requests
+        )
+        self.assertIn(
+            "/kallupx/controller-utils/releases/download/v0.1.1/latest-stable.sig", requests
+        )
         self.assertIn("/kallupx/controller-utils/releases/download/v0.1.1/" + ARTIFACT, requests)
-        self.assertNotIn("/kallupx/controller-utils/releases/latest/download/latest.sig", requests)
+        self.assertFalse(
+            any(path.endswith("/latest.json") or path.endswith("/latest.sig") for path in requests)
+        )
+
+    def test_unsupported_os_channel_refuses_updates_before_downloading(self):
+        self.github_release()
+        result = self.run_client(os_channel="preview")
+        self.assertEqual(
+            result["snapshots"][-1]["message"], "Couldn't check for updates. Try again later."
+        )
+        self.assertEqual(self.server.requests, [])
+        self.assertFalse((self.data / "updates/pending").exists())
+
+    def test_supported_channel_switch_keeps_installed_version_and_update_history(self):
+        self.github_release()
+        self.run_client([{"op": "check", "manual": True}, {"op": "wait"}, {"op": "activate"}])
+        self.server.files["latest-stable.json"] = self.server.files.pop("latest.json")
+        self.server.files["latest-stable.sig"] = self.server.files.pop("latest.sig")
+        self.server.requests.clear()
+        result = self.run_client(os_channel="stable")
+        self.assertEqual(result["snapshots"][-1]["message"], "You're up to date.")
+        self.assertEqual(result["release"]["sequence"], 2)
+        history = json.loads((self.data / "updates/state.json").read_text())
+        self.assertEqual(history["highest_sequence"], 2)
+        self.assertFalse(any(ARTIFACT in path for path, _ in self.server.requests))
+
+    def test_missing_stable_metadata_does_not_fall_back_to_beta(self):
+        self.github_release()
+        result = self.run_client(os_channel="stable")
+        self.assertEqual(result["snapshots"][-1]["message"], "No releases have been published yet.")
+        self.assertFalse((self.data / "updates/pending").exists())
+        self.assertTrue(all("latest-stable.json" in path for path, _ in self.server.requests))
 
     def test_empty_repository_reports_no_published_release(self):
         self.server.files = {}

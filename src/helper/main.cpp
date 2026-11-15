@@ -4,6 +4,7 @@
 #include "native_paths.h"
 #include "supervisor.h"
 #include "platform/linux/protected_directory.h"
+#include "platform/linux/files.h"
 #include "steamvr/compatibility.h"
 #include <cerrno>
 #include <cstdlib>
@@ -72,9 +73,12 @@ int main(int argc, char **argv) {
         ct::ProtectedDirectory run("/run");
         auto owned_lock = lock(run);
         const auto &binary = ct::steamvr::compatibility::XrService;
-        ct::PinnedProcess process(ct::helper::find_process(binary),
-                                  {binary.path, binary.sha256, 1000, 0x200000}, true);
-        ct::helper::NativePackage package;
+        const auto pid = ct::helper::find_process(binary);
+        const auto fingerprint = ct::sha256("/proc/" + std::to_string(pid) + "/exe");
+        if (!ct::steamvr::compatibility::supported_xr_service(fingerprint))
+            throw std::runtime_error("XRService changed. Native protocol must be reverified");
+        ct::PinnedProcess process(pid, {binary.path, fingerprint, 1000, 0x200000}, true);
+        ct::helper::NativePackage package(fingerprint);
         ct::helper::CapabilityPublisher capability(status_directory(run), process.pid(),
                                                    process.started());
         ct::helper::XrProcess host(process, &package, &capability);

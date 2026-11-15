@@ -1,5 +1,7 @@
 #include <curl/curl.h>
-#include <curl/websockets.h>
+#include <boost/asio.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/websocket.hpp>
 #include <json-c/json.h>
 #include <algorithm>
 #include <cerrno>
@@ -10,7 +12,7 @@
 #include <fcntl.h>
 #include <iostream>
 #include <memory>
-#include <poll.h>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
@@ -132,20 +134,6 @@ std::string discover() {
     auto targets = parse(body);
     return websocket_target(targets.get());
 }
-// Curl may split one frame across reads and one message across frames.
-struct Message {
-    std::string data;
-    bool append(const char *bytes, size_t count, int flags, curl_off_t remaining) {
-        if (flags & CURLWS_CLOSE)
-            throw std::runtime_error("Steam debugger websocket closed");
-        if (flags & (CURLWS_PING | CURLWS_PONG))
-            return false;
-        if (!(flags & CURLWS_TEXT) || count > max_message - data.size())
-            throw std::runtime_error("Invalid Steam debugger websocket message");
-        data.append(bytes, count);
-        return remaining == 0 && !(flags & CURLWS_CONT);
-    }
-};
 Json evaluation_result(json_object *message, int expected) {
     auto id = member(message, "id");
     if (!id || !json_object_is_type(id, json_type_int) || json_object_get_int(id) != expected)
@@ -170,31 +158,47 @@ Json inactive_state(const std::string &serial) {
     return state;
 }
 class Debugger final : public SteamUiConnection {
-    Curl curl{nullptr, curl_easy_cleanup};
-    curl_socket_t socket = CURL_SOCKET_BAD;
+    boost::asio::io_context io;
+    boost::beast::websocket::stream<boost::asio::ip::tcp::socket, false> socket{io};
     int sequence = 0;
-    void wait(short events, double deadline) {
-        if (monotonic() >= deadline)
+    template <class Start> void perform(double deadline, Start start) {
+        const auto remaining = deadline - monotonic();
+        if (remaining <= 0)
             throw std::runtime_error("Steam debugger response timed out");
-        pollfd fd{socket, events, 0};
-        int result = poll(&fd, 1, 20);
-        if (result < 0 && errno != EINTR)
-            throw std::runtime_error("Steam debugger socket poll failed");
-        if (fd.revents & (POLLERR | POLLHUP | POLLNVAL))
-            throw std::runtime_error("Steam debugger socket disconnected");
+        std::optional<boost::system::error_code> result;
+        io.restart();
+        start([&](boost::system::error_code error, auto...) { result = error; });
+        io.run_for(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(remaining)));
+        if (!result) {
+            boost::system::error_code ignored;
+            socket.next_layer().cancel(ignored);
+            socket.next_layer().close(ignored);
+            io.restart();
+            io.run();
+            throw std::runtime_error("Steam debugger response timed out");
+        }
+        if (*result)
+            throw std::runtime_error("Steam debugger transport: " + result->message());
     }
 
   public:
     Debugger() {
         const auto url = discover();
-        curl.reset(curl_easy_init());
-        if (!curl)
-            throw std::runtime_error("Cannot initialize debugger websocket");
-        configure(curl.get(), url);
-        curl_easy_setopt(curl.get(), CURLOPT_PROTOCOLS_STR, "ws");
-        curl_easy_setopt(curl.get(), CURLOPT_CONNECT_ONLY, 2L);
-        check(curl_easy_perform(curl.get()));
-        check(curl_easy_getinfo(curl.get(), CURLINFO_ACTIVESOCKET, &socket));
+        const double deadline = monotonic() + .5;
+        const boost::asio::ip::tcp::endpoint endpoint(boost::asio::ip::address_v4::loopback(),
+                                                      8080);
+        perform(deadline, [&](auto completion) {
+            socket.next_layer().async_connect(endpoint, std::move(completion));
+        });
+        socket.next_layer().set_option(boost::asio::ip::tcp::no_delay(true));
+        perform(deadline, [&](auto completion) {
+            socket.async_handshake("127.0.0.1:8080",
+                                   url.substr(std::string("ws://127.0.0.1:8080").size()),
+                                   std::move(completion));
+        });
+        socket.read_message_max(max_message);
+        socket.text(true);
     }
     Json renew(const SteamUiRequest &request) override {
         if (!serial_valid(request.serial) || !serial_valid(request.owner) ||
@@ -235,39 +239,17 @@ class Debugger final : public SteamUiConnection {
         json_object_object_add(command.get(), "params", params.release());
         const std::string payload = encode(command.get());
         const double deadline = monotonic() + .25;
-        size_t offset = 0;
-        while (offset < payload.size()) {
-            size_t sent = 0;
-            const auto result = curl_ws_send(curl.get(), payload.data() + offset,
-                                             payload.size() - offset, &sent, 0, CURLWS_TEXT);
-            offset += sent;
-            if (result == CURLE_AGAIN)
-                wait(POLLOUT, deadline);
-            else {
-                check(result);
-                if (!sent)
-                    wait(POLLOUT, deadline);
-            }
-            if (monotonic() >= deadline)
-                throw std::runtime_error("Steam debugger send timed out");
-        }
-        Message message;
+        perform(deadline, [&](auto completion) {
+            socket.async_write(boost::asio::buffer(payload), std::move(completion));
+        });
+        boost::beast::flat_buffer message(max_message);
         while (monotonic() < deadline) {
-            char buffer[8192];
-            size_t count = 0;
-            const curl_ws_frame *frame = nullptr;
-            const auto result = curl_ws_recv(curl.get(), buffer, sizeof(buffer), &count, &frame);
-            if (result == CURLE_AGAIN) {
-                wait(POLLIN, deadline);
-                continue;
-            }
-            check(result);
-            if (!frame)
-                throw std::runtime_error("Missing debugger websocket frame metadata");
-            if (!message.append(buffer, count, frame->flags, frame->bytesleft))
-                continue;
-            auto reply = parse(message.data);
-            message.data.clear();
+            perform(deadline,
+                    [&](auto completion) { socket.async_read(message, std::move(completion)); });
+            if (!socket.got_text())
+                throw std::runtime_error("Invalid Steam debugger websocket message");
+            auto reply = parse(boost::beast::buffers_to_string(message.data()));
+            message.consume(message.size());
             auto value = evaluation_result(reply.get(), id);
             if (value)
                 return value;

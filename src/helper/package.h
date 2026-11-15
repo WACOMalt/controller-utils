@@ -13,7 +13,8 @@ class NativePackage {
   public:
     static constexpr const char *Root = TrackerDirectory;
     static constexpr const char *Library = TrackerLibrary;
-    explicit NativePackage(std::filesystem::path path = Root, uid_t owner = 0);
+    explicit NativePackage(const std::string &runtime, std::filesystem::path path = Root,
+                           uid_t owner = 0);
     const AdapterLayout &layout() const {
         return layout_;
     }

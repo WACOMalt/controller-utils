@@ -23,6 +23,7 @@ SANITIZE_FLAGS := -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
 NATIVE_TESTS := calibration_test native_core_test controller_device_test controller_reader_test native_transport_test platform_runtime_test native_shortcuts_test child_process_test tracking_session_test application_test application_instance_test registration_test native_host_test ui_presentation_test steam_ui_test update_metadata_test update_compatibility_test update_archive_test update_transaction_test update_launcher_test pinned_process_test trace_test gate_patch_test adapter_patch_test recovery_guard_test tracker_control_test native_package_test capability_publisher_test native_bootstrap_test supervisor_test xr_backend_test discovery_test
 NATIVE_TESTS += resilience_validation_test resilience_validation_tail_test resilience_validation_module_test resilience_gates_test resilience_maintenance_profiles resilience_maintenance_client resilience_maintenance_repair
 NATIVE_TESTS += public_interfaces_test startup_recovery_test
+NATIVE_TESTS += input_gates_test
 SANITIZE_TESTS := $(NATIVE_TESTS) native_tracker_test native_queue_startup_test update_installer_test update_setup_test
 FORMAT_SOURCES += $(wildcard src/*/*.cpp src/*/*.h src/*/*/*.cpp src/*/*/*.h)
 
@@ -106,6 +107,7 @@ check: build/controller-utils-updater build/update_setup_test check-arm-loader b
 	./build/supervisor_test
 	./build/xr_backend_test
 	./build/discovery_test
+	./build/input_gates_test
 	./build/native_bridge_test
 	./build/native_bridge_recovery_test
 	./build/native_queue_startup_test
@@ -270,6 +272,9 @@ build/xr_backend_test: tests/xr_backend_test.cpp $(NATIVE_OBJECTS)
 
 build/discovery_test: tests/discovery_test.cpp tests/process_image.h $(NATIVE_OBJECTS)
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $(filter %.cpp %.o,$^) -o $@ $(NATIVE_LIBS)
+
+build/input_gates_test: tests/input_gates_test.cpp $(NATIVE_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $^ -o $@ $(NATIVE_LIBS)
 
 -include $(NATIVE_OBJECTS:.o=.d) $(INSTALLER_OBJECTS:.o=.d) $(patsubst build/native/%,build/sanitize/%,$(INSTALLER_OBJECTS:.o=.d))
 -include $(SANITIZE_OBJECTS:.o=.d)

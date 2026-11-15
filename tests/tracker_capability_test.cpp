@@ -17,7 +17,15 @@ static unsigned renewals, status_reads;
 static bool continuous_renewal;
 static bool renew_during_path_stat;
 static bool remove_status;
+static uint64_t clock_ns = 1000000000;
 static void publish();
+
+static int capability_clock_gettime(clockid_t clock, timespec *stamp) {
+    assert(clock == CLOCK_MONOTONIC_RAW);
+    stamp->tv_sec = clock_ns / 1000000000;
+    stamp->tv_nsec = clock_ns % 1000000000;
+    return 0;
+}
 
 static int capability_open(const char *path, int flags) {
     return ::open(std::strcmp(path, "/run/controllertracking-native-tracker") ? path
@@ -71,7 +79,9 @@ static int capability_fstatat(int fd, const char *path, struct stat *info, int f
 #define open capability_open
 #define fstat capability_fstat
 #define fstatat capability_fstatat
+#define clock_gettime capability_clock_gettime
 #include "../driver/tracker_capability.h"
+#undef clock_gettime
 #undef fstat
 #undef fstatat
 #undef open
@@ -87,9 +97,7 @@ static void publish() {
     assert(!rename(pending.c_str(), path.c_str()));
 }
 static uint64_t raw_time() {
-    timespec stamp{};
-    assert(!clock_gettime(CLOCK_MONOTONIC_RAW, &stamp));
-    return uint64_t(stamp.tv_sec) * 1000000000ULL + stamp.tv_nsec;
+    return clock_ns;
 }
 int main() {
     char path[] = "/tmp/ct-capability-XXXXXX";
@@ -127,7 +135,7 @@ int main() {
     renew_during_path_stat = false;
     remove_status = true;
     assert(!ct::tracker_ready(1.));
-    value.deadline = raw_time() - 1;
+    clock_ns = value.deadline;
     publish();
     assert(!ct::tracker_ready(1.));
     assert(!std::strcmp(ct::tracker_failure_reason, "native health lease expired"));

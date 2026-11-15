@@ -46,6 +46,31 @@ int main() {
         rejects([&] { validate_gate_mappings(layout, base, mappings); }, "pinned RX");
         assert(layout.index_offset + 4 == layout.payload.size());
         {
+            auto original = layout.original;
+            original.insert(original.end(), layout.following.begin(), layout.following.end());
+            auto patched = layout.redirect;
+            patched.insert(patched.end(), layout.following.begin(), layout.following.end());
+            const Bytes empty(layout.payload.size());
+            validate_gate_start(layout, original, empty, false);
+            validate_gate_start(layout, original, empty, true);
+            validate_gate_start(layout, patched, layout.payload, true);
+            rejects([&] { validate_gate_start(layout, patched, layout.payload, false); },
+                    "supported original");
+            patched.back() ^= 1;
+            rejects([&] { validate_gate_start(layout, patched, layout.payload, true); },
+                    "supported original");
+            auto partial = layout.payload;
+            std::fill(partial.begin(), partial.begin() + 4, 0);
+            validate_gate_start(layout, original, partial, true);
+            rejects([&] { validate_gate_start(layout, original, partial, false); },
+                    "supported original");
+            partial[4] ^= 1;
+            rejects([&] { validate_gate_start(layout, original, partial, true); },
+                    "supported original");
+            rejects([&] { validate_gate_start(layout, original, Bytes(4), true); },
+                    "supported original");
+        }
+        {
             ct::test::PatchMemory memory;
             seed(memory, layout, base);
             rejects([&] { GateLease lease(memory, layout, base); }, "changed externally");

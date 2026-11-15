@@ -1,5 +1,6 @@
 #include "helper/discovery.h"
 #include "platform/linux/child.h"
+#include "platform/linux/error.h"
 #include "process_image.h"
 #include <cassert>
 #include <iostream>
@@ -12,11 +13,15 @@ void ready(ct::ChildProcess &child) {
         ct::sleep_for(.001);
     }
 }
-template <class Function> void rejects(Function fn) {
+template <class Function> void rejects(Function fn, bool transient) {
     bool failed = false;
     try {
         fn();
+    } catch (const ct::ConnectionError &) {
+        assert(transient);
+        failed = true;
     } catch (const std::exception &) {
+        assert(!transient);
         failed = true;
     }
     assert(failed);
@@ -37,17 +42,17 @@ int main(int argc, char **argv) {
     const ct::steamvr::compatibility::Binary binary{"discovery-test", path.c_str(),
                                                     spec.sha256.c_str()};
     assert(ct::helper::find_process(binary, false, getuid()) == first.pid());
-    rejects([&] { ct::helper::find_process(binary, false, getuid() + 1); });
-    rejects([&] { ct::helper::find_process(binary, true, getuid()); });
+    rejects([&] { ct::helper::find_process(binary, false, getuid() + 1); }, true);
+    rejects([&] { ct::helper::find_process(binary, true, getuid()); }, true);
     {
         ct::ChildProcess second({image.launch(), "--target"}, std::filesystem::current_path());
         ready(second);
-        rejects([&] { ct::helper::find_process(binary, false, getuid()); });
+        rejects([&] { ct::helper::find_process(binary, false, getuid()); }, false);
         second.close("q\n");
     }
     assert(ct::helper::find_process(binary, false, getuid()) == first.pid());
     first.close("q\n");
-    rejects([&] { ct::helper::find_process(binary, false, getuid()); });
+    rejects([&] { ct::helper::find_process(binary, false, getuid()); }, true);
     std::cout << "native discovery: exact executable, owner, VR association, duplicates and "
                  "process exit passed\n";
 }

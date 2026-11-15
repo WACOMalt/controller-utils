@@ -1,4 +1,5 @@
 #include "discovery.h"
+#include "platform/linux/error.h"
 #include "platform/linux/files.h"
 #include "platform/linux/process.h"
 #include <charconv>
@@ -42,11 +43,13 @@ pid_t find_process(const steamvr::compatibility::Binary &binary, bool require_vr
         }
     }
     if (matches.size() != 1) {
-        if (std::string(binary.name) == "XRService")
-            throw std::runtime_error("Expected exactly one stock Frame tracking service.");
-        if (require_vr)
-            throw std::runtime_error("Expected one Steam UI process connected to VR.");
-        throw std::runtime_error("Expected one native SteamVR compositor.");
+        const auto message = std::string(binary.name) == "XRService"
+                                 ? "Expected exactly one stock Frame tracking service."
+                             : require_vr ? "Expected one Steam UI process connected to VR."
+                                          : "Expected one native SteamVR compositor.";
+        if (matches.empty())
+            throw ConnectionError(message);
+        throw std::runtime_error(message);
     }
     return matches.front();
 }

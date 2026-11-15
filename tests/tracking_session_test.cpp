@@ -71,6 +71,31 @@ int main() {
     {
         Fixture f;
         auto session = f.create();
+        f.helper->pending.clear();
+        f.helper->pending.push_back(
+            ct::json::parse(R"({"op":"native_helper_ready","isolated":true})"));
+        f.helper->pending.push_back(ct::json::parse(
+            R"({"op":"input_gate_waiting","message":"Waiting for Steam UI to connect to VR."})"));
+        session->step({f.report(0)});
+        assert(!session->input_state().gate_ready && !session->input_state().error);
+        assert(!f.helper->stopped && f.hid->raw && f.hid->brightness == 100);
+        f.helper->pending.push_back(ct::json::parse(R"({"op":"input_gate_ready"})"));
+        f.now += .01;
+        session->step({f.report(1)});
+        assert(session->input_state().gate_ready && !session->input_state().error);
+        assert(!f.helper->stopped && f.hid->raw && f.hid->brightness == 100);
+        f.helper->pending.push_back(ct::json::parse(
+            R"({"op":"input_gate_error","message":"incompatible Steam interface"})"));
+        f.now += .01;
+        session->step({f.report(2)});
+        assert(!session->input_state().gate_ready);
+        assert(session->input_state().error == "incompatible Steam interface");
+        assert(!f.helper->stopped);
+        session->close();
+    }
+    {
+        Fixture f;
+        auto session = f.create();
         const auto started = f.now;
         for (unsigned tick = 0; tick < 230; ++tick) {
             f.now = started + tick * .01;

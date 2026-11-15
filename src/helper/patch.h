@@ -55,6 +55,8 @@ void validate_gate_mappings(const GateLayout &layout, uintptr_t base,
                             const std::vector<MemoryMapping> &mappings);
 std::optional<uintptr_t> gate_resume_pc(const GateLayout &layout, uintptr_t base, uintptr_t pc);
 bool owned_gate(const GateLayout &layout, const Bytes &value);
+void validate_gate_start(const GateLayout &layout, const Bytes &site, const Bytes &cave,
+                         bool restoring);
 uint32_t validate_live_gate(const GateLayout &layout, const Bytes &site, const Bytes &cave);
 class GatePatch {
     PatchMemory &memory_;

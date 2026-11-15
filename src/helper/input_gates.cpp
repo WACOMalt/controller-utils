@@ -6,9 +6,17 @@
 #include <algorithm>
 #include <exception>
 #include <stdexcept>
+#include <system_error>
 
 namespace ct::helper {
-class InputGates::Owner {
+namespace {
+bool unavailable(const std::exception &error) {
+    const auto system = dynamic_cast<const std::system_error *>(&error);
+    return dynamic_cast<const ConnectionError *>(&error) ||
+           (system && (system->code() == std::errc::no_such_file_or_directory ||
+                       system->code() == std::errc::no_such_process));
+}
+class NativeGate final : public InputGates::Owner {
     GateKind kind_;
     PinnedProcess process_;
     GateLayout layout_;
@@ -26,50 +34,47 @@ class InputGates::Owner {
                             kind == GateKind::Input);
     }
 
-    Owner(GateKind kind, pid_t pid)
+    NativeGate(GateKind kind, pid_t pid, bool restoring)
         : kind_(kind), process_(pid, spec(kind, pid), true),
           layout_(resolve_gate_layout(kind, process_.image())) {
         const auto &layout = layout_;
         validate_gate_mappings(layout, process_.image_base(), process_.mappings());
-        auto site = layout.original;
-        site.insert(site.end(), layout.following.begin(), layout.following.end());
         const auto cave = process_.read(process_.image_base() + layout.cave, layout.payload.size());
-        if (process_.read(process_.image_base() + layout.site, 12) != site ||
-            (cave != Bytes(cave.size()) && !(kind == GateKind::Beam && cave == layout.payload)))
-            throw std::runtime_error("Steam UI input code differs from the supported original.");
+        const auto live = process_.read(process_.image_base() + layout.site, 12);
+        validate_gate_start(layout, live, cave, restoring);
     }
 
   public:
-    explicit Owner(GateKind kind) : Owner(kind, pid(kind)) {}
+    NativeGate(GateKind kind, bool restoring) : NativeGate(kind, pid(kind), restoring) {}
     bool alive() const {
         return process_.alive();
     }
-    uint32_t index() const {
+    uint32_t index() const override {
         return lease_ ? lease_->index() : UINT32_MAX;
     }
-    void apply() {
+    void apply() override {
         attempted_ = true;
         patch_gate(process_, layout_, true);
         memory_.emplace(process_, layout_);
         lease_.emplace(*memory_, layout_, process_.image_base());
     }
-    void renew(uint32_t index, double now) {
+    void renew(uint32_t index, double now) override {
         if (!lease_)
             throw std::runtime_error("Steam UI input gate is unavailable.");
         lease_->renew(index, now);
     }
-    void disable() {
+    void disable() override {
         if (lease_)
             lease_->disable();
     }
-    void poll(double now) {
+    void poll(double now) override {
         if (!alive())
             throw ConnectionError(
                 "Steam UI restarted. UI control is unavailable until tracking restarts.");
         if (lease_)
             lease_->poll(now);
     }
-    void restore(bool force) {
+    void restore(bool force) override {
         if ((!attempted_ && !force) || !alive())
             return;
         process_.refresh();
@@ -94,20 +99,12 @@ class InputGates::Owner {
         attempted_ = false;
     }
 };
-InputGates::InputGates(TrackingBackend &backend) : backend_(backend) {
-    try {
-        input_ = std::make_unique<Owner>(GateKind::Input);
-    } catch (const std::exception &error) {
-        input_error_ = error.what();
-    }
-    if (input_) {
-        try {
-            beam_ = std::make_unique<Owner>(GateKind::Beam);
-        } catch (const std::exception &error) {
-            beam_error_ = error.what();
-        }
-    }
-}
+} // namespace
+InputGates::InputGates(TrackingBackend &backend, Factory factory)
+    : backend_(backend),
+      factory_(factory ? std::move(factory) : Factory([](GateKind kind, bool restoring) {
+          return std::make_unique<NativeGate>(kind, restoring);
+      })) {}
 InputGates::~InputGates() = default;
 void InputGates::error(const char *operation, const std::string &text) {
     auto value = json::parse("{}");
@@ -138,40 +135,49 @@ void InputGates::close(std::unique_ptr<Owner> &owner, const char *operation, boo
     }
     owner.reset();
 }
-void InputGates::start(const RecoveryOutput &) {
-    if (!input_) {
-        error("input_gate_error", input_error_);
+void InputGates::acquire(GateKind kind, double now) {
+    auto &retry = kind == GateKind::Input ? input_retry_ : beam_retry_;
+    if (!retry || now < *retry)
         return;
-    }
+    auto &owner = kind == GateKind::Input ? input_ : beam_;
+    auto &message = kind == GateKind::Input ? input_error_ : beam_error_;
+    const auto failure = kind == GateKind::Input ? "input_gate_error" : "beam_gate_error";
     try {
-        input_->apply();
-    } catch (const std::exception &failure) {
-        const std::string text = failure.what();
-        try {
-            close(input_, "input_gate_error");
-        } catch (const std::exception &) {
+        owner = factory_(kind, false);
+        if (!owner)
+            throw std::runtime_error("Native UI gate could not be created.");
+    } catch (const std::exception &problem) {
+        if (unavailable(problem)) {
+            retry = now + 1;
+            if (message != problem.what()) {
+                message = problem.what();
+                error(kind == GateKind::Input ? "input_gate_waiting" : "beam_gate_waiting",
+                      message);
+            }
+        } else {
+            retry.reset();
+            error(failure, problem.what());
         }
-        error("input_gate_error", text);
         return;
     }
-    if (beam_) {
-        try {
-            beam_->apply();
-            const auto ready = json::parse("{\"op\":\"beam_gate_ready\"}");
-            output_.emit(ready.get());
-        } catch (const std::exception &failure) {
-            const std::string text = failure.what();
-            try {
-                close(beam_, "beam_gate_error");
-            } catch (const std::exception &) {
-            }
-            error("beam_gate_error", text);
-        }
-    } else
-        error("beam_gate_error", beam_error_);
-    const auto ready = json::parse("{\"op\":\"input_gate_ready\"}");
+    retry.reset();
+    try {
+        owner->apply();
+    } catch (const std::exception &problem) {
+        const std::string text = problem.what();
+        close(owner, failure);
+        error(failure, text);
+        return;
+    }
+    message.clear();
+    const auto ready = json::parse(kind == GateKind::Input ? "{\"op\":\"input_gate_ready\"}"
+                                                           : "{\"op\":\"beam_gate_ready\"}");
     output_.emit(ready.get());
-    state("input_gate_state", input_->index());
+    if (kind == GateKind::Input)
+        state("input_gate_state", owner->index());
+}
+void InputGates::start(const RecoveryOutput &) {
+    started_ = true;
 }
 void InputGates::command(uint8_t value, double now) {
     if (!input_)
@@ -219,6 +225,9 @@ void InputGates::command(uint8_t value, double now) {
     }
 }
 void InputGates::poll(double now) {
+    acquire(GateKind::Input, now);
+    if (input_)
+        acquire(GateKind::Beam, now);
     if (input_) {
         try {
             const auto before = input_->index();
@@ -248,7 +257,21 @@ void InputGates::poll(double now) {
     }
 }
 void InputGates::release_input() {
+    input_retry_.reset();
+    beam_retry_.reset();
     std::exception_ptr failure;
+    if (!started_) {
+        // The guard may have acquired its gates after the supervisor forked.
+        for (const auto kind : {GateKind::Beam, GateKind::Input}) {
+            auto &owner = kind == GateKind::Input ? input_ : beam_;
+            try {
+                owner = factory_(kind, true);
+            } catch (const std::exception &problem) {
+                if (!unavailable(problem) && !failure)
+                    failure = std::current_exception();
+            }
+        }
+    }
     try {
         close(beam_, "beam_gate_error", true);
     } catch (...) {

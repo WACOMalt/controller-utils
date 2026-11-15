@@ -374,6 +374,49 @@ function harness() {
 }
 
 {
+    const h = harness();
+    h.context.vrGamepadInput = {
+        FocusedVROverlayOwnedBySteam : true,
+        m_lastOverlayInputFocusChangedMessage : {overlay_key : () => 'valve.steam.gamepadui.main'}
+    };
+    const result = h.renew(false, {keyboard : true, actionOnly : true});
+    assert.equal(result.keyboardOverlay, undefined);
+    assert.deepEqual(h.keyboard, [ 'show' ]);
+}
+
+{
+    const h = harness();
+    h.renew();
+    const lease = h.context.__controllertrackingInputFilterV1;
+    const target = 'gamescope.gamescope-0.window.62';
+    h.context.vrGamepadInput = {
+        FocusedVROverlayOwnedBySteam : false,
+        m_lastOverlayInputFocusChangedMessage : {overlay_key : () => target}
+    };
+    const result = h.renew(
+        false,
+        {keyboard : true, actionOnly : true, serial : 'keyboard-shortcut', owner : 'shortcut'});
+    assert.equal(result.keyboardOverlay, target);
+    assert.equal(result.active, false);
+    assert.deepEqual(h.keyboard, []);
+    assert.equal(h.context.__controllertrackingInputFilterV1, lease);
+    h.renew(false);
+}
+
+{
+    for (const target of ['', 'x'.repeat(256), 'window\n', 'window\0', null]) {
+        const h = harness();
+        h.context.vrGamepadInput = {
+            FocusedVROverlayOwnedBySteam : false,
+            m_lastOverlayInputFocusChangedMessage : {overlay_key : () => target}
+        };
+        assert.throws(() => h.renew(false, {keyboard : true, actionOnly : true}),
+                      /Focused window keyboard is unavailable/);
+        assert.deepEqual(h.keyboard, []);
+    }
+}
+
+{
     const h = harness(), input = h.mountKeyboard();
     const down = input.m_ButtonDownCallbacks, up = input.m_ButtonUpCallbacks,
           analog = input.m_AnalogCallbacks;

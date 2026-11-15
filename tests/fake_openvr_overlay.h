@@ -3,14 +3,21 @@
 #include <atomic>
 #include <array>
 #include <cstdlib>
+#include <cstring>
 namespace ct_test {
 using namespace vr;
 inline std::atomic<unsigned> next_overlay{0}, overlays_created{0}, overlays_destroyed{0},
     textures_submitted{0}, overlays_shown{0};
 inline std::array<float, 512> overlay_widths{};
+inline std::atomic<unsigned> keyboard_shown{0}, keyboard_positioned{0};
 struct Overlay final : IVROverlay {
     EVROverlayError FindOverlay(const char *pchOverlayKey,
                                 VROverlayHandle_t *pOverlayHandle) override {
+        const auto target = std::getenv("CT_TEST_OPENVR_KEYBOARD_TARGET");
+        if (target && !std::strcmp(target, pchOverlayKey)) {
+            *pOverlayHandle = 42;
+            return VROverlayError_None;
+        }
         return VROverlayError_UnknownOverlay;
     }
     EVROverlayError CreateOverlay(const char *pchOverlayKey, const char *pchOverlayName,
@@ -340,6 +347,15 @@ struct Overlay final : IVROverlay {
                                            uint32_t unFlags, const char *pchDescription,
                                            uint32_t unCharMax, const char *pchExistingText,
                                            uint64_t uUserValue) override {
+        if (ulOverlayHandle != 42 || eInputMode != k_EGamepadTextInputModeNormal ||
+            eLineInputMode != k_EGamepadTextInputLineModeSingleLine ||
+            unFlags !=
+                (KeyboardFlag_Minimal | KeyboardFlag_HideDoneKey | KeyboardFlag_ShowArrowKeys) ||
+            *pchDescription || unCharMax != 1024 || *pchExistingText || uUserValue)
+            return VROverlayError_InvalidParameter;
+        ++keyboard_shown;
+        if (std::getenv("CT_TEST_OPENVR_KEYBOARD_FAILURE"))
+            return VROverlayError_RequestFailed;
         return {};
     }
     uint32_t GetKeyboardText(VR_OUT_STRING() char *pchText, uint32_t cchText) override {
@@ -350,7 +366,11 @@ struct Overlay final : IVROverlay {
         ETrackingUniverseOrigin eTrackingOrigin,
         const HmdMatrix34_t *pmatTrackingOriginToKeyboardTransform) override {}
     void SetKeyboardPositionForOverlay(VROverlayHandle_t ulOverlayHandle,
-                                       HmdRect2_t avoidRect) override {}
+                                       HmdRect2_t avoidRect) override {
+        if (ulOverlayHandle == 42 && avoidRect.vTopLeft.v[0] == 0 && avoidRect.vTopLeft.v[1] == 0 &&
+            avoidRect.vBottomRight.v[0] == 0 && avoidRect.vBottomRight.v[1] == 0)
+            ++keyboard_positioned;
+    }
     VRMessageOverlayResponse ShowMessageOverlay(const char *pchText, const char *pchCaption,
                                                 const char *pchButton0Text,
                                                 const char *pchButton1Text = nullptr,

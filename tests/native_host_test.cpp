@@ -15,6 +15,7 @@ struct Log {
     bool keyboard_closed = false;
     bool keyboard_running = true;
     std::optional<std::string> keyboard_failure;
+    std::string keyboard_overlay;
     unsigned system_requests = 0;
     bool system_closed = false;
     uint32_t system_tap = 0;
@@ -71,6 +72,9 @@ class SteamUi final : public ct::SteamUiSession {
             return {ct::FilterState{true, 3, "TEST1234", ct::monotonic_time()}};
         if (log_->keyboard_failure)
             return {ct::FilterError{*log_->keyboard_failure}};
+        if (!log_->keyboard_overlay.empty())
+            return {ct::FilterState{false, -1, "keyboard-shortcut", ct::monotonic_time(), "off",
+                                    log_->keyboard_overlay}};
         return {};
     }
     void close() override {
@@ -153,6 +157,8 @@ int main() {
     const auto startup_enabled = symbol<unsigned (*)()>(module, "ct_test_startup_enabled");
     const auto shutdowns = symbol<unsigned (*)()>(module, "ct_test_shutdown");
     const auto poses = symbol<unsigned (*)()>(module, "ct_test_pose_calls");
+    const auto keyboard_shown = symbol<unsigned (*)()>(module, "ct_test_keyboard_shown");
+    const auto keyboard_positioned = symbol<unsigned (*)()>(module, "ct_test_keyboard_positioned");
     const auto before = descriptors();
     {
         reset();
@@ -256,6 +262,34 @@ int main() {
         host.confirm_update();
         host.close();
         assert(!presentation.running());
+    }
+    {
+        reset();
+        auto log = std::make_shared<Log>();
+        log->keyboard_running = false;
+        log->keyboard_overlay = "gamescope.gamescope-0.window.62";
+        ct::ApplicationLock lock(data / "app.lock");
+        ct::Runtime runtime(true, library);
+        ct::ControllerReader reader;
+        ct::ui::Presentation presentation;
+        ct::NativeApplicationHost host(runtime, reader, lock, presentation, app, data, children(),
+                                       steam_ui(log));
+        setenv("CT_TEST_OPENVR_KEYBOARD_TARGET", log->keyboard_overlay.c_str(), 1);
+        host.request_keyboard();
+        assert(!host.keyboard_error());
+        assert(keyboard_shown() == 1 && keyboard_positioned() == 1);
+        assert(!host.keyboard_error() && keyboard_shown() == 1);
+        setenv("CT_TEST_OPENVR_KEYBOARD_FAILURE", "1", 1);
+        host.request_keyboard();
+        const auto failure = host.keyboard_error();
+        assert(failure && failure->find("Could not open the window keyboard") != std::string::npos);
+        assert(keyboard_shown() == 2 && keyboard_positioned() == 1);
+        unsetenv("CT_TEST_OPENVR_KEYBOARD_FAILURE");
+        unsetenv("CT_TEST_OPENVR_KEYBOARD_TARGET");
+        host.request_keyboard();
+        assert(host.keyboard_error() == "The focused window is no longer available");
+        assert(keyboard_shown() == 2);
+        host.close();
     }
     {
         reset();

@@ -42,6 +42,7 @@ extern "C" void ct_test_reset() {
     init_count = shutdown_count = last_type = 0;
     ct_test::identified = ct_test::startup_calls = ct_test::pose_calls = 0;
     ct_test::startup_enabled = false;
+    ct_test::keyboard_shown = ct_test::keyboard_positioned = 0;
     ct_test::next_overlay = ct_test::overlays_created = ct_test::overlays_destroyed =
         ct_test::textures_submitted = ct_test::overlays_shown = 0;
 }
@@ -78,4 +79,10 @@ extern "C" unsigned ct_test_textures_submitted() {
 }
 extern "C" unsigned ct_test_overlays_shown() {
     return ct_test::overlays_shown;
+}
+extern "C" unsigned ct_test_keyboard_shown() {
+    return ct_test::keyboard_shown;
+}
+extern "C" unsigned ct_test_keyboard_positioned() {
+    return ct_test::keyboard_positioned;
 }

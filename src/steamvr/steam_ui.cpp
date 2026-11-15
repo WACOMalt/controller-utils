@@ -1,6 +1,7 @@
 #include "steam_ui.h"
 #include "platform/linux/resource.h"
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -16,7 +17,13 @@ FilterState confirmation(json_object *result, const std::string &serial, double 
         (active && (index < 0 || index >= 16)) || (!active && index != -1))
         throw std::runtime_error("Steam input filter returned an invalid identity");
     const auto health = json::find(result, "keyboardHealth");
-    return {active, int(index), serial, now, health ? json::string(health) : "off"};
+    const auto target = json::find(result, "keyboardOverlay");
+    const auto overlay = target ? json::string(target) : std::string();
+    if (target && (active || overlay.empty() || overlay.size() > 255 ||
+                   !std::all_of(overlay.begin(), overlay.end(),
+                                [](unsigned char c) { return c >= 0x20 && c <= 0x7e; })))
+        throw std::runtime_error("Steam keyboard returned an invalid window target");
+    return {active, int(index), serial, now, health ? json::string(health) : "off", overlay};
 }
 bool keyboard_watch(json_object *result) {
     const auto watch = json::find(result, "keyboardWatch");

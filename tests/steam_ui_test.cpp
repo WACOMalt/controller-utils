@@ -15,6 +15,7 @@ struct State {
     std::atomic<bool> fail{false}, cleanup_failure{false}, wrong_identity{false}, retain{false};
     std::atomic<bool> block{false}, entered{false}, proceed{false};
     std::atomic<bool> invalid_flag{false};
+    std::optional<std::string> keyboard_overlay;
     std::condition_variable changed;
     size_t count() {
         std::lock_guard<std::mutex> lock(mutex);
@@ -60,6 +61,10 @@ class Connection final : public SteamUiConnection {
                                json_object_new_string(request.typing ? "ready" : "off"));
         json_object_object_add(result.get(), "keyboardWatch",
                                json_object_new_boolean(request.typing));
+        if (state_->keyboard_overlay)
+            json_object_object_add(result.get(), "keyboardOverlay",
+                                   json_object_new_string_len(state_->keyboard_overlay->data(),
+                                                              state_->keyboard_overlay->size()));
         return result;
     }
 };
@@ -235,6 +240,23 @@ int main() {
         error(client, "disconnected");
         client.close();
         assert(log->count() == 1 && !log->live);
+    }
+    {
+        auto log = std::make_shared<State>();
+        log->keyboard_overlay = "gamescope.gamescope-0.window.62";
+        SteamUiClient client("keyboard-shortcut", true, connect(log), clock);
+        wait([&] { return !client.running(); });
+        assert(state(client, false).keyboard_overlay == *log->keyboard_overlay);
+        client.close();
+    }
+    for (const auto &target : {std::string(), std::string(256, 'x'), std::string("window\n"),
+                               std::string("window\0", 7)}) {
+        auto log = std::make_shared<State>();
+        log->keyboard_overlay = target;
+        SteamUiClient client("keyboard-shortcut", true, connect(log), clock);
+        wait([&] { return !client.running(); });
+        error(client, "invalid window target");
+        client.close();
     }
     {
         auto log = std::make_shared<State>();

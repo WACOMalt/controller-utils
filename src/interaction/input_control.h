@@ -22,6 +22,7 @@ struct FilterState {
     std::string serial;
     double time;
     std::string keyboard_health = "off";
+    std::string keyboard_overlay = {};
 };
 struct FilterError {
     std::string message;

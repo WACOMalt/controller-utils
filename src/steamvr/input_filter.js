@@ -141,6 +141,15 @@
             throw new Error("Another controller input filter owns this context");
     }
     if (request.keyboard) {
+        const input = globalThis.vrGamepadInput;
+        if (request.actionOnly && input?.FocusedVROverlayOwnedBySteam === false) {
+            const focus = input.m_lastOverlayInputFocusChangedMessage;
+            const overlay = typeof focus?.overlay_key === "function" ? focus.overlay_key() : null;
+            if (typeof overlay !== "string" || !overlay.length || overlay.length > 255 ||
+                /[^\x20-\x7e]/.test(overlay))
+                throw new Error("Focused window keyboard is unavailable");
+            return {...inactive(""), keyboardOverlay : overlay};
+        }
         const active = globalThis.FocusNavController?.m_ActiveContext?.m_activeWindow;
         const window =
             active?.SteamClient?.OpenVR?.Keyboard?.Show

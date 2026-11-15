@@ -208,9 +208,28 @@ std::optional<std::string> NativeApplicationHost::keyboard_error() {
     auto request = std::move(keyboard_);
     try {
         request->close();
-        for (const auto &event : request->poll())
+        for (const auto &event : request->poll()) {
             if (const auto error = std::get_if<FilterError>(&event))
                 return error->message;
+            const auto &state = std::get<FilterState>(event);
+            if (!state.keyboard_overlay.empty()) {
+                auto overlay = runtime_.overlay;
+                vr::VROverlayHandle_t window = vr::k_ulOverlayHandleInvalid;
+                if (!overlay || overlay->FindOverlay(state.keyboard_overlay.c_str(), &window) ||
+                    !window)
+                    throw std::runtime_error("The focused window is no longer available");
+                const auto error = overlay->ShowKeyboardForOverlay(
+                    window, vr::k_EGamepadTextInputModeNormal,
+                    vr::k_EGamepadTextInputLineModeSingleLine,
+                    vr::KeyboardFlag_Minimal | vr::KeyboardFlag_HideDoneKey |
+                        vr::KeyboardFlag_ShowArrowKeys,
+                    "", 1024, "", 0);
+                if (error)
+                    throw std::runtime_error("Could not open the window keyboard: " +
+                                             std::to_string(error));
+                overlay->SetKeyboardPositionForOverlay(window, {});
+            }
+        }
     } catch (const std::exception &error) {
         return error.what();
     }

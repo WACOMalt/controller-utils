@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <libunwind.h>
 
 namespace j = ct::json;
 namespace {
@@ -519,6 +520,10 @@ j::Value replay(json_object *request) {
 int main(int argc, char **argv) {
     if (argc == 2 && std::string(argv[1]) == "--update-download-worker")
         return ct::update::download_worker();
+    // libunwind keeps a process-wide probe pipe. Initialize it before descriptor checks.
+    void *frames[32];
+    if (unw_backtrace(frames, 32) <= 0)
+        return 1;
     std::string line;
     while (std::getline(std::cin, line)) {
         try {

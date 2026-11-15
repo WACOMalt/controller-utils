@@ -144,6 +144,11 @@ int main(int argc, char **argv) {
                 process, ct::helper::place_gate(ct::helper::GateKind::Input, 0x1000, 0x2000));
         },
         "unsupported native gate process");
+    // Initialize the remote unwinder's process-wide probe pipe before counting descriptors.
+    {
+        ct::helper::StoppedProcess stopped(process);
+        (void)stopped.stack(child.pid());
+    }
     const auto descriptors = fd_count();
     unsigned complete_stacks = 0;
     for (unsigned cycle = 0; cycle < 100; ++cycle) {

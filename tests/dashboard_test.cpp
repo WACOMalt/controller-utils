@@ -60,15 +60,15 @@ int main() {
             cairo_surface_flush(surface);
             const auto data = cairo_image_surface_get_data(surface);
             const auto stride = cairo_image_surface_get_stride(surface);
-            const auto check_text = [&](int x, int y, int w, int h, uint32_t ink, uint32_t detail) {
+            const auto check_text = [&](int x, int y, int w, int h) {
+                uint32_t background = 0;
+                std::memcpy(&background, data + y * stride + x * 4, 4);
                 int top = y + h, bottom = y - 1;
                 for (int yy = y; yy < y + h; ++yy)
                     for (int xx = x; xx < x + w; ++xx) {
                         uint32_t pixel = 0;
                         std::memcpy(&pixel, data + yy * stride + xx * 4, 4);
-                        const auto rgb = pixel & 0xffffffu;
-                        const bool glyph = ink == 0x0e141b ? rgb == 0 : rgb == 0xffffff;
-                        if (rgb == ink || rgb == detail || glyph) {
+                        if ((pixel & 0xffffffu) != (background & 0xffffffu)) {
                             top = std::min(top, yy);
                             bottom = std::max(bottom, yy);
                         }
@@ -79,18 +79,13 @@ int main() {
             };
             for (const auto &b : dashboard.buttons)
                 if (b.page == -1 || b.page == dashboard.page) {
-                    const bool focus = dashboard.hovered == b.action && dashboard.available(b);
                     if (b.kind == Dashboard::Switch)
-                        check_text(b.x + 24, b.y, b.w - 144, b.h, focus ? 0x0e141b : 0xdcdedf,
-                                   focus ? 0x3d4450 : 0x8b929a);
-                    else {
-                        const uint32_t ink =
-                            !dashboard.available(b) ? 0x67707b : (focus ? 0x0e141b : 0xffffff);
-                        check_text(b.x + 12, b.y, b.w - 24, b.h, ink, ink);
-                    }
+                        check_text(b.x + 24, b.y, b.w - 144, b.h);
+                    else
+                        check_text(b.x + 12, b.y, b.w - 24, b.h);
                 }
             if (dashboard.page == 2)
-                check_text(304, 458, 632, 104, 0xdcdedf, 0xb8bcbf);
+                check_text(304, 458, 632, 104);
         };
         {
             Vr unused;

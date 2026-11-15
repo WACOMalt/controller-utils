@@ -243,7 +243,9 @@ class NativeUpdateClientTest(unittest.TestCase):
         )
         result = json.loads(completed.stdout)
         self.assertNotIn("error", result, completed.stderr)
-        self.assertEqual(result["fds_before"], result["fds_after"])
+        self.assertEqual(
+            result["fds_before"], result["fds_after"], result.get("descriptor_targets")
+        )
         self.assertLess(result["maximum_poll"], 0.2)
         return result
 

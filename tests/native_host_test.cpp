@@ -6,6 +6,7 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <libunwind.h>
 
 namespace {
 namespace j = ct::json;
@@ -120,6 +121,10 @@ size_t descriptors() {
 }
 } // namespace
 int main() {
+    // Initialize libunwind's process-wide probe pipe before descriptor checks.
+    void *frames[32];
+    if (unw_backtrace(frames, 32) <= 0)
+        return 1;
     const auto root =
         std::filesystem::current_path() / "build" / ("native-host-" + std::to_string(getpid()));
     const auto app = root / "app", data = root / "app-data";

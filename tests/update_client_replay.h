@@ -1,4 +1,5 @@
 #pragma once
+#include "download_replay.h"
 #include "update/client.h"
 #include "update/transaction.h"
 #include "platform/linux/files.h"
@@ -84,7 +85,11 @@ inline j::Value replay(json_object *request) {
     json_object_object_add(result.get(), "maximum_poll", json_object_new_double(maximum_poll));
     json_object_object_add(result.get(), "close_time", json_object_new_double(close_time));
     json_object_object_add(result.get(), "fds_before", json_object_new_uint64(before));
-    json_object_object_add(result.get(), "fds_after", json_object_new_uint64(descriptors()));
+    const auto after = descriptors();
+    json_object_object_add(result.get(), "fds_after", json_object_new_uint64(after));
+    if (after != before)
+        json_object_object_add(result.get(), "descriptor_targets",
+                               download_replay::descriptor_targets().release());
     json_object_object_add(result.get(), "release", ct::update::release(root).to_json().release());
     return result;
 }

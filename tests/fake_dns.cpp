@@ -19,8 +19,10 @@ extern "C" int getaddrinfo(const char *name, const char *service, const struct a
             if (descriptor >= 0) {
                 char message[32];
                 const auto count = std::snprintf(message, sizeof(message), "%d", getpid());
-                (void)write(descriptor, message, size_t(count));
+                const auto written = write(descriptor, message, size_t(count));
                 close(descriptor);
+                if (written != count)
+                    return EAI_SYSTEM;
             }
         }
         if (const auto value = std::getenv("CT_DNS_TEST_FORBIDDEN_FD"))

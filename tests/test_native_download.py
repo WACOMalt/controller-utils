@@ -297,7 +297,9 @@ class NativeDownloadTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertTrue(marker.is_file(), "DNS delay hook did not run")
         result = json.loads(completed.stdout)
-        self.assertEqual(result["fds_before"], result["fds_after"])
+        self.assertEqual(
+            result["fds_before"], result["fds_after"], result.get("descriptor_targets")
+        )
         self.assertFalse(self.output.exists())
         return result, marker
 

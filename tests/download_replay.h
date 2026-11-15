@@ -17,6 +17,17 @@ inline size_t descriptors() {
     }
     return result;
 }
+inline ct::json::Value descriptor_targets() {
+    ct::json::Value result(json_object_new_object());
+    for (const auto &entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+        std::error_code error;
+        const auto target = std::filesystem::read_symlink(entry.path(), error);
+        if (!error)
+            json_object_object_add(result.get(), entry.path().filename().c_str(),
+                                   json_object_new_string(target.c_str()));
+    }
+    return result;
+}
 inline ct::json::Value replay(json_object *request) {
     namespace j = ct::json;
     const auto before = descriptors();
@@ -63,7 +74,10 @@ inline ct::json::Value replay(json_object *request) {
     json_object_object_add(result.get(), "elapsed",
                            json_object_new_double(ct::monotonic_time() - started));
     json_object_object_add(result.get(), "fds_before", json_object_new_uint64(before));
-    json_object_object_add(result.get(), "fds_after", json_object_new_uint64(descriptors()));
+    const auto after = descriptors();
+    json_object_object_add(result.get(), "fds_after", json_object_new_uint64(after));
+    if (after != before)
+        json_object_object_add(result.get(), "descriptor_targets", descriptor_targets().release());
     return result;
 }
 } // namespace download_replay

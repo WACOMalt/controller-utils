@@ -4,6 +4,7 @@
 #include <chrono>
 #include <iostream>
 #include <filesystem>
+#include <libunwind.h>
 
 namespace {
 using namespace ct;
@@ -114,6 +115,10 @@ size_t descriptors() {
 }
 } // namespace
 int main() {
+    // Initialize libunwind's process-wide probe pipe before descriptor checks.
+    void *frames[32];
+    if (unw_backtrace(frames, 32) <= 0)
+        return 1;
     using namespace ct;
     std::atomic<double> now{100};
     const auto clock = [&] { return now.load(); };

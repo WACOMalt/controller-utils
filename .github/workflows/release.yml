@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: controller-utils-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'kallupx/controller-utils'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.14"
+      - name: Check release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import json, os
+          release = json.load(open("release.json"))
+          assert os.environ["RELEASE_TAG"] == "v" + release["version"], "Tag must match release.json"
+          PY
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            g++ clang lld llvm make pkg-config libegl1-mesa-dev libgl1-mesa-dev libegl-mesa0 libgl1-mesa-dri \
+            libjson-c-dev libssl-dev libunwind-dev libarchive-dev libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev \
+            fonts-noto-core nodejs desktop-file-utils qemu-user-static
+          python -m pip install --requirement requirements-dev.txt
+      - name: Build and verify
+        run: |
+          make check-format
+          make -j4 all native-tracker build/release_check
+          make check
+          sudo ./build/update_installer_test
+          sudo python3 -m unittest discover -s tests -p test_install_updates.py -v
+          make -j4 check-sanitize
+          sudo env CONTROLLER_UTILS_INSTALLER_SANITIZE=1 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 python3 -m unittest discover -s tests -p test_install_updates.py -v
+          python tools/stage_release.py --output build/release-stage --requirements build/release-requirements.json
+      - name: Require a newer release sequence
+        run: |
+          status=$(curl --silent --show-error --location --proto '=https' --proto-redir '=https' \
+            --connect-timeout 5 --max-time 30 --max-filesize 65536 \
+            --output build/previous.json --write-out '%{http_code}' \
+            https://github.com/kallupx/controller-utils/releases/latest/download/latest.json)
+          case "$status" in
+            200)
+              tag=$(python - <<'PY'
+          import json, re
+          version = json.load(open("build/previous.json"))["version"]
+          assert re.fullmatch(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", version)
+          print("v" + version)
+          PY
+              )
+              curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+                --connect-timeout 5 --max-time 30 --max-filesize 64 \
+                --output build/previous.sig \
+                "https://github.com/kallupx/controller-utils/releases/download/$tag/latest.sig"
+              ./build/release_check --metadata build/previous.json build/previous.sig assets/update-public.pem > build/previous-release.json
+              python - <<'PY'
+          import json
+          previous = json.load(open("build/previous-release.json"))
+          current = json.load(open("release.json"))
+          assert current["sequence"] > previous["sequence"], "Increase release.json sequence"
+          assert tuple(map(int, current["version"].split("."))) > tuple(map(int, previous["version"].split("."))), "Increase release.json version"
+          PY
+              ;;
+            404) ;;
+            *) echo "Could not read the current release" >&2; exit 1 ;;
+          esac
+      - name: Sign complete release
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          umask 077
+          keyfile="$RUNNER_TEMP/controller-utils-signing.pem"
+          trap 'rm -f "$keyfile"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$keyfile"
+          python tools/package_release.py \
+            --app-stage build/release-stage --requirements build/release-requirements.json \
+            --key "$keyfile" --output dist
+          artifact=$(python -c 'import json; print(json.load(open("dist/latest.json"))["artifact"])')
+          (cd dist && sha256sum "$artifact" latest.json latest.sig > SHA256SUMS)
+      - name: Publish complete GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > build/release-draft.txt 2>build/release-error.txt
+          then
+            test "$(cat build/release-draft.txt)" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Controller Utils $RELEASE_TAG" --generate-notes
+          fi
+          artifact=$(python -c 'import json; print(json.load(open("dist/latest.json"))["artifact"])')
+          gh release upload "$RELEASE_TAG" "dist/$artifact" dist/latest.json dist/latest.sig dist/SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

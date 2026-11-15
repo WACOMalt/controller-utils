@@ -1,0 +1,58 @@
+name: Checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.14"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            g++ make pkg-config libegl1-mesa-dev libgl1-mesa-dev libegl-mesa0 libgl1-mesa-dri \
+            libjson-c-dev libssl-dev libunwind-dev libarchive-dev libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev \
+            fonts-noto-core nodejs desktop-file-utils clang lld llvm qemu-user-static
+          python -m pip install --requirement requirements-dev.txt
+      - name: Check formatting and lint
+        run: make check-format
+      - name: Build
+        run: make -j2 all
+      - name: Test
+        run: make check
+      - name: Check native memory and undefined behavior
+        run: make -j2 check-sanitize
+
+  privileged-updates:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Install updater build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y g++ make pkg-config libjson-c-dev libssl-dev libcurl4-openssl-dev libarchive-dev libunwind-dev
+      - name: Verify installation and interrupted update recovery
+        run: |
+          make -j4 build/update_installer_test build/sanitize/update_installer_test build/update_setup_test build/sanitize/update_setup_test build/resilience_maintenance_repair build/sanitize/resilience_maintenance_repair
+          sudo ./build/update_installer_test
+          sudo env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ./build/sanitize/update_installer_test
+      - name: Check installer privilege separation
+        run: |
+          sudo python3 -m unittest discover -s tests -p test_install_updates.py -v
+          sudo env CONTROLLER_UTILS_INSTALLER_SANITIZE=1 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 python3 -m unittest discover -s tests -p test_install_updates.py -v

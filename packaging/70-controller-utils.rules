@@ -1,0 +1,2 @@
+SUBSYSTEM=="hidraw", KERNELS=="0003:28DE:1304.*", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNELS=="0005:28DE:1303.*", TAG+="uaccess"

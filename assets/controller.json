@@ -1,0 +1,23 @@
+{
+  "source": "sc_solid_stl_20260429.stl",
+  "source_sha256": "c4f485ea749e27619b3abf53ee181f4551cb8f452be0a5d90091113eb73b79b5",
+  "source_triangles": 1577352,
+  "triangles": 50000,
+  "units": "metres",
+  "bounds": [
+    [
+      -0.07938039302825928,
+      -0.056512847542762756,
+      -0.00577918067574501
+    ],
+    [
+      0.07937716692686081,
+      0.008170858025550842,
+      0.10498367249965668
+    ]
+  ],
+  "sha256": "de82efe83a1c302bca56a3a31cf28f3390cbe189c3bb998bf95bd48e55c9edec",
+  "license": "CC BY-NC-SA 4.0",
+  "attribution": "Copyright 2026 Valve Corporation",
+  "calibrated_to_imu_or_emitter": false
+}

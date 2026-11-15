@@ -1,0 +1,231 @@
+{
+  "geometry_sha256": "de82efe83a1c302bca56a3a31cf28f3390cbe189c3bb998bf95bd48e55c9edec",
+  "geometry_unchanged": true,
+  "textures_unchanged": true,
+  "sha256": "7d0c629b39d6474253cd51714b01d3cbfa8e6ce2429709df8901c1a9f0f854cb",
+  "bytes": 50352,
+  "dpad_pivot": [
+    -0.049003103747963905,
+    -0.003851153189316392,
+    0.02000080607831478
+  ],
+  "parts": [
+    {
+      "name": "A",
+      "mask": 1,
+      "triangles": 300,
+      "press_translation": [
+        -8.261453418210373e-05,
+        -0.0007946235761764435,
+        -4.181161233956245e-05
+      ]
+    },
+    {
+      "name": "B",
+      "mask": 2,
+      "triangles": 305,
+      "press_translation": [
+        -0.00021341635040985756,
+        -0.000770800492283107,
+        1.7890289932158244e-05
+      ]
+    },
+    {
+      "name": "X",
+      "mask": 4,
+      "triangles": 319,
+      "press_translation": [
+        -3.992168450364699e-05,
+        -0.0007990028654389935,
+        8.246979258333292e-07
+      ]
+    },
+    {
+      "name": "Y",
+      "mask": 8,
+      "triangles": 306,
+      "press_translation": [
+        -9.504332448975637e-05,
+        -0.0007923019550992332,
+        5.6783610451146346e-05
+      ]
+    },
+    {
+      "name": "steam",
+      "mask": 65536,
+      "triangles": 240,
+      "press_translation": [
+        -8.752504465611833e-07,
+        -0.0004499395639100793,
+        -7.322756657399572e-06
+      ]
+    },
+    {
+      "name": "view",
+      "mask": 64,
+      "triangles": 154,
+      "press_translation": [
+        1.6194650545754925e-05,
+        -0.000448784098618422,
+        2.881954407951917e-05
+      ]
+    },
+    {
+      "name": "menu",
+      "mask": 16384,
+      "triangles": 157,
+      "press_translation": [
+        -1.3482749186343992e-05,
+        -0.0004489468192273921,
+        2.765807260069758e-05
+      ]
+    },
+    {
+      "name": "quick",
+      "mask": 16,
+      "triangles": 213,
+      "press_translation": [
+        -5.408402957139821e-09,
+        -0.0004354112802733302,
+        -0.00011365305531083934
+      ]
+    },
+    {
+      "name": "bumper_left",
+      "mask": 524288,
+      "triangles": 1012,
+      "press_translation": [
+        0.0002099287801744732,
+        0.00024381542421567757,
+        0.0006216783301426768
+      ]
+    },
+    {
+      "name": "bumper_right",
+      "mask": 512,
+      "triangles": 934,
+      "press_translation": [
+        -0.0002099494611905032,
+        0.00024386287499818918,
+        0.0006216527342041013
+      ]
+    },
+    {
+      "name": "rear_left_upper",
+      "mask": 131072,
+      "triangles": 610,
+      "press_translation": [
+        -0.0005072965815835207,
+        0.00040599147363115114,
+        -1.791930948671377e-05
+      ]
+    },
+    {
+      "name": "rear_right_upper",
+      "mask": 128,
+      "triangles": 631,
+      "press_translation": [
+        0.000506895772210931,
+        0.0004064981089365128,
+        -1.7775363448408063e-05
+      ]
+    },
+    {
+      "name": "rear_left_lower",
+      "mask": 262144,
+      "triangles": 465,
+      "press_translation": [
+        -0.0005746559041888178,
+        0.00030375603113559445,
+        -1.6927284732320285e-06
+      ]
+    },
+    {
+      "name": "rear_right_lower",
+      "mask": 256,
+      "triangles": 463,
+      "press_translation": [
+        0.0005744755923621888,
+        0.0003040960434836028,
+        -1.8412272350080886e-06
+      ]
+    },
+    {
+      "name": "dpad",
+      "mask": 15360,
+      "triangles": 960,
+      "press_translation": [
+        -0.0,
+        0.0,
+        -0.0
+      ]
+    },
+    {
+      "name": "trigger_left",
+      "part": 16,
+      "triangles": 1344,
+      "pivot": [
+        -0.04768922179937363,
+        -0.020448628813028336,
+        -0.0008054547943174839
+      ]
+    },
+    {
+      "name": "trigger_right",
+      "part": 17,
+      "triangles": 1798,
+      "pivot": [
+        0.047677941620349884,
+        -0.02045409195125103,
+        -0.0008179968572221696
+      ]
+    },
+    {
+      "name": "stick_left",
+      "part": 18,
+      "triangles": 1735,
+      "pivot": [
+        -0.02300435584038496,
+        -0.005,
+        0.031500207260251045
+      ]
+    },
+    {
+      "name": "stick_right",
+      "part": 19,
+      "triangles": 1495,
+      "pivot": [
+        0.022995902225375175,
+        -0.005,
+        0.03149833809584379
+      ]
+    },
+    {
+      "name": "pad_left",
+      "part": 20,
+      "triangles": 6813,
+      "mapping_xz": [
+        -0.03028910768222532,
+        0.0614644351839509,
+        0.01674134638279838,
+        0.0028183643393362135,
+        0.002727506875046318,
+        -0.01620164459197239
+      ]
+    },
+    {
+      "name": "pad_right",
+      "part": 21,
+      "triangles": 7208,
+      "mapping_xz": [
+        0.030283067254082134,
+        0.061463109241650285,
+        0.01674337756915625,
+        -0.002818017002932743,
+        -0.002726502298828951,
+        -0.016199638747728007
+      ]
+    }
+  ],
+  "motion": "Buttons move inward along their surface normals. The D-pad rocks 0.045 rad, triggers rotate 0.30 rad, sticks tilt 0.35 rad and click 0.65 mm. Pivots and travel are estimated from CAD."
+}

@@ -1,0 +1,70 @@
+{
+  "jsonid": "input_profile",
+  "controller_type": "controllertracking_sc26",
+  "device_class": "TrackedDeviceClass_Controller",
+  "resource_root": "controllertracking_native",
+  "driver_name": "controllertracking_native",
+  "input_bindingui_mode": "controller_handed",
+  "should_show_binding_errors": true,
+  "input_source": {
+    "/input/activate": {
+      "type": "button",
+      "click": true,
+      "order": 8
+    },
+    "/input/trigger": {
+      "type": "trigger",
+      "value": true,
+      "click": true,
+      "touch": true,
+      "order": 1
+    },
+    "/input/grip": {
+      "type": "trigger",
+      "value": true,
+      "click": true,
+      "touch": true,
+      "order": 2
+    },
+    "/input/thumbstick": {
+      "type": "joystick",
+      "click": true,
+      "touch": true,
+      "order": 3
+    },
+    "/input/bumper": {
+      "type": "button",
+      "click": true,
+      "order": 4
+    },
+    "/input/b": {
+      "type": "button",
+      "click": true,
+      "order": 5
+    },
+    "/pose/raw": {
+      "type": "pose"
+    },
+    "/pose/cursor": {
+      "type": "pose"
+    },
+    "/input/cursorpad": {
+      "type": "trackpad",
+      "click": true,
+      "touch": true,
+      "order": 6
+    },
+    "/input/trackpad": {
+      "type": "trackpad",
+      "click": true,
+      "touch": true,
+      "order": 7
+    }
+  },
+  "default_bindings": [
+    {
+      "app_key": "openvr.component.vrcompositor",
+      "binding_url": "vrcompositor_bindings_sc26.json"
+    }
+  ]
+}

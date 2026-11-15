@@ -1,0 +1,310 @@
+#define GL_GLEXT_PROTOTYPES 1
+#include <GL/gl.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include "ui/button_glyphs.h"
+#include "ui/body_pose.h"
+#include "interaction/pointer_math.h"
+#include "ui/gaze.h"
+#include "ui/vr.h"
+#include "ui/dashboard.h"
+#include "ui/alignment.h"
+#include "ui/pointer.h"
+
+namespace {
+template <class Widget> bool accept_text(Widget &widget, const std::string &text) {
+    const auto command = ct::ui::command(ct::json::parse(text).get());
+    return command && widget.accept(*command);
+}
+void discard(ct::ui::Event) {}
+} // namespace
+int main() {
+    try {
+        Dashboard dashboard(nullptr, discard);
+        if (!dashboard.hit(320, 190) || std::string(dashboard.hit(320, 190)) != "toggle" ||
+            dashboard.hit(20, 20) || dashboard.hit(270, 190))
+            throw std::runtime_error("dashboard hit test failed");
+        vr::VREvent_t event{};
+        event.eventType = vr::VREvent_MouseMove;
+        event.data.mouse.x = 320;
+        event.data.mouse.y = 190;
+        dashboard.pointer(event);
+        event.eventType = vr::VREvent_MouseButtonDown;
+        event.data.mouse = {};
+        event.data.mouse.button = vr::VRMouseButton_Left;
+        dashboard.pointer(event);
+        event.eventType = vr::VREvent_MouseButtonUp;
+        const auto action = dashboard.pointer(event);
+        if (!action || std::string(action) != "toggle" || dashboard.pointer(event))
+            throw std::runtime_error("dashboard pointer click failed");
+        event.eventType = vr::VREvent_MouseButtonDown;
+        dashboard.pointer(event);
+        event.eventType = vr::VREvent_FocusLeave;
+        dashboard.pointer(event);
+        event.eventType = vr::VREvent_MouseButtonUp;
+        if (dashboard.pointer(event) || dashboard.hovered)
+            throw std::runtime_error("dashboard pointer leave failed");
+        accept_text(
+            dashboard,
+            R"({"op":"updates","version":"0.1.0","message":"Update server is not configured.","automatic":true,"configured":false,"busy":false})");
+        const auto check_layout = [&](cairo_surface_t *surface) {
+            cairo_surface_flush(surface);
+            const auto data = cairo_image_surface_get_data(surface);
+            const auto stride = cairo_image_surface_get_stride(surface);
+            const auto check_text = [&](int x, int y, int w, int h, uint32_t ink, uint32_t detail) {
+                int top = y + h, bottom = y - 1;
+                for (int yy = y; yy < y + h; ++yy)
+                    for (int xx = x; xx < x + w; ++xx) {
+                        uint32_t pixel = 0;
+                        std::memcpy(&pixel, data + yy * stride + xx * 4, 4);
+                        const auto rgb = pixel & 0xffffffu;
+                        const bool glyph = ink == 0x0e141b ? rgb == 0 : rgb == 0xffffff;
+                        if (rgb == ink || rgb == detail || glyph) {
+                            top = std::min(top, yy);
+                            bottom = std::max(bottom, yy);
+                        }
+                    }
+                if (bottom < top || std::abs((top + bottom + 1) / 2. - (y + h / 2.)) > 1)
+                    throw std::runtime_error("settings text is not vertically centered at " +
+                                             std::to_string(x) + "," + std::to_string(y));
+            };
+            for (const auto &b : dashboard.buttons)
+                if (b.page == -1 || b.page == dashboard.page) {
+                    const bool focus = dashboard.hovered == b.action && dashboard.available(b);
+                    if (b.kind == Dashboard::Switch)
+                        check_text(b.x + 24, b.y, b.w - 144, b.h, focus ? 0x0e141b : 0xdcdedf,
+                                   focus ? 0x3d4450 : 0x8b929a);
+                    else {
+                        const uint32_t ink =
+                            !dashboard.available(b) ? 0x67707b : (focus ? 0x0e141b : 0xffffff);
+                        check_text(b.x + 12, b.y, b.w - 24, b.h, ink, ink);
+                    }
+                }
+            if (dashboard.page == 2)
+                check_text(304, 458, 632, 104, 0xdcdedf, 0xb8bcbf);
+        };
+        {
+            Vr unused;
+            ControllerPointer pointer(unused, dashboard);
+            accept_text(pointer, R"({"op":"keyboard_typing","active":true})");
+            if (!pointer.keyboard_typing)
+                throw std::runtime_error("keyboard mode was discarded");
+            bool bad_keyboard = false;
+            try {
+                accept_text(pointer, R"({"op":"keyboard_typing","active":1})");
+            } catch (const std::exception &) {
+                bad_keyboard = true;
+            }
+            if (!bad_keyboard || !pointer.keyboard_typing)
+                throw std::runtime_error("invalid keyboard mode changed state");
+            for (bool enabled : {false, true}) {
+                pointer.enabled = enabled;
+                dashboard.hovered = dashboard.pressed = "toggle";
+                dashboard.dirty = false;
+                accept_text(pointer, R"({"op":"input_off"})");
+                if (pointer.enabled || dashboard.hovered || dashboard.pressed || !dashboard.dirty)
+                    throw std::runtime_error(
+                        "tracking failure left dashboard selection or press active");
+            }
+            const auto input = [&](double time, uint32_t buttons) {
+                return accept_text(
+                    pointer, "{\"op\":\"controls\",\"time\":" + std::to_string(time) +
+                                 ",\"buttons\":" + std::to_string(buttons) +
+                                 ",\"triggers\":[0,0],\"left_pad\":[0,0,0],\"right_pad\":[0,0,"
+                                 "0],\"left_stick\":[0,0],\"right_stick\":[0,0]}");
+            };
+            input(100, 0);
+            if (pointer.toggle(100, 0x80))
+                throw std::runtime_error("pointer enabled without a button press");
+            input(100.01, 0x80);
+            if (!pointer.toggle(100.01, 0x80) || !pointer.toggle(100.01, 0x80))
+                throw std::runtime_error("pointer toggle did not latch");
+            input(100.02, 0x80);
+            if (!pointer.toggle(100.02, 0x80))
+                throw std::runtime_error("held pointer button toggled twice");
+            input(100.03, 0);
+            pointer.toggle(100.03, 0x80);
+            input(100.04, 0x80);
+            if (pointer.toggle(100.04, 0x80) || pointer.toggle(100.3, 0x80))
+                throw std::runtime_error("pointer disable or stale-input guard failed");
+            bool rejected = false;
+            try {
+                accept_text(pointer, "{\"op\":\"controls\",\"time\":101,\"buttons\":1e100}");
+            } catch (const std::exception &) {
+                rejected = true;
+            }
+            if (!rejected)
+                throw std::runtime_error("invalid pointer input accepted");
+        }
+        auto image = dashboard.paint();
+        check_layout(image);
+        const auto rc = cairo_surface_write_to_png(image, "build/dashboard-check.png");
+        cairo_surface_destroy(image);
+        if (rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("dashboard image failed");
+        dashboard.recovery = true;
+        dashboard.tracking_available = false;
+        dashboard.gamepad_connected = false;
+        if (!dashboard.hit(320, 310) || std::string(dashboard.hit(320, 310)) != "recenter" ||
+            !dashboard.hit(900, 310) || std::string(dashboard.hit(900, 310)) != "acquire")
+            throw std::runtime_error("recovery actions are unavailable");
+        dashboard.recovery = false;
+        dashboard.tracking_available = true;
+        dashboard.enabled = true;
+        if (dashboard.hit(320, 310) || dashboard.hit(900, 310))
+            throw std::runtime_error("tracking actions enabled without gamepad");
+        dashboard.gamepad_connected = true;
+        if (!dashboard.hit(320, 310) || !dashboard.hit(900, 310) ||
+            std::string(dashboard.hit(900, 310)) != "acquire")
+            throw std::runtime_error("connected tracking actions unavailable");
+        if (dashboard.hit(320, 345) || dashboard.hit(900, 345))
+            throw std::runtime_error("shortcut note became a button");
+        dashboard.tracking_available = false;
+        if (dashboard.hit(900, 310) || !dashboard.hit(320, 190))
+            throw std::runtime_error("tracking preference blocked by runtime compatibility");
+        dashboard.tracking_available = true;
+        dashboard.status = "Tracking starts automatically when your gamepad connects.";
+        image = dashboard.paint();
+        check_layout(image);
+        const auto enabled_rc =
+            cairo_surface_write_to_png(image, "build/dashboard-tracking-enabled-check.png");
+        cairo_surface_destroy(image);
+        if (enabled_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("enabled tracking image failed");
+        dashboard.page = 1;
+        dashboard.input_enabled = true;
+        dashboard.input_state = "Laser - swipe right pad for cursor";
+        image = dashboard.paint();
+        check_layout(image);
+        const auto controls_rc =
+            cairo_surface_write_to_png(image, "build/dashboard-controls-check.png");
+        cairo_surface_destroy(image);
+        if (controls_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("controls image failed");
+        accept_text(
+            dashboard,
+            R"({"op":"updates","version":"0.1.0","message":"Version 0.1.1 is ready. Reopen the app to install.","automatic":true,"configured":true,"busy":false})");
+        dashboard.page = 2;
+        accept_text(dashboard,
+                    R"({"op":"repair_status","message":"Authentication required.","busy":false})");
+        if (std::string(dashboard.hit(300, 650)) != "inspect_permissions" ||
+            std::string(dashboard.hit(800, 650)) != "repair_permissions")
+            throw std::runtime_error("permission actions are not reachable");
+        accept_text(
+            dashboard,
+            R"({"op":"repair_status","message":"Waiting for authentication.","busy":true})");
+        if (dashboard.hit(300, 650) || dashboard.hit(800, 650))
+            throw std::runtime_error("permission actions remained active during authentication");
+        accept_text(
+            dashboard,
+            R"({"op":"repair_status","message":"Authentication is required to check or repair permissions.","busy":false})");
+        if (std::string(dashboard.hit(960, 510)) != "check_updates")
+            throw std::runtime_error("update button hit test failed");
+        image = dashboard.paint();
+        check_layout(image);
+        cairo_surface_flush(image);
+        const auto app_pixels = cairo_image_surface_get_data(image);
+        const auto app_stride = cairo_image_surface_get_stride(image);
+        for (int y = 0; y < Dashboard::height; ++y)
+            for (int x = 0; x < Dashboard::width; ++x) {
+                uint32_t pixel = 0;
+                std::memcpy(&pixel, app_pixels + y * app_stride + x * 4, 4);
+                if ((pixel & 0xffffffu) == 0x1a9fffu && !dashboard.hit(float(x), float(y)))
+                    throw std::runtime_error("settings accent escaped its control");
+            }
+        const auto app_rc = cairo_surface_write_to_png(image, "build/dashboard-app-check.png");
+        cairo_surface_destroy(image);
+        if (app_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("app settings image failed");
+        accept_text(
+            dashboard,
+            R"({"op":"updates","version":"0.1.0","message":"Update server is not configured.","automatic":true,"configured":false,"busy":false})");
+        image = dashboard.paint();
+        const auto offline_rc =
+            cairo_surface_write_to_png(image, "build/dashboard-app-preview.png");
+        cairo_surface_destroy(image);
+        if (offline_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("offline settings image failed");
+        dashboard.hovered = dashboard.hit(1080, 180);
+        image = dashboard.paint();
+        check_layout(image);
+        cairo_surface_destroy(image);
+        dashboard.hovered = nullptr;
+        dashboard.update_status =
+            "An update is ready. Reopen Controller Utils when you're finished to install it. Your "
+            "controller settings and headset calibration will be kept.";
+        image = dashboard.paint();
+        check_layout(image);
+        const auto wrapped_rc =
+            cairo_surface_write_to_png(image, "build/dashboard-app-wrap-check.png");
+        cairo_surface_destroy(image);
+        if (wrapped_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("wrapped settings image failed");
+        AlignmentOverlay alignment(dashboard);
+        accept_text(
+            alignment,
+            R"({"op":"tracking_feedback","active":true,"time":10,"state":"palm","message":"Hold the gamepad in front of Frame, buttons up, with its top edge roughly away from you.","progress":null})");
+        if (!alignment.visible(10.1) || alignment.visible(10.6) || alignment.visible(9.9))
+            throw std::runtime_error("alignment freshness failed");
+        image = alignment.paint();
+        const auto alignment_rc = cairo_surface_write_to_png(image, "build/alignment-check.png");
+        cairo_surface_destroy(image);
+        accept_text(alignment, R"({"op":"tracking_feedback","active":false})");
+        if (alignment.visible(10.1) || alignment_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("alignment check failed");
+        for (
+            const auto *command :
+            {R"({"op":"tracking_feedback","active":true,"time":10,"state":"unknown","message":"test","progress":null})",
+             R"({"op":"tracking_feedback","active":true,"time":10,"state":"palm","message":"test","progress":1.1})",
+             R"({"op":"tracking_feedback","active":true,"time":10,"state":"palm","message":"test"})"}) {
+            bool rejected = false;
+            try {
+                accept_text(alignment, command);
+            } catch (const std::exception &) {
+                rejected = true;
+            }
+            if (!rejected)
+                throw std::runtime_error("invalid gamepad feedback was accepted");
+        }
+        accept_text(
+            alignment,
+            R"({"op":"tracking_feedback","active":true,"time":10,"state":"realign","message":"Look ahead and point the gamepad the same way. Hold the gamepad still for a moment.","progress":null})");
+        image = alignment.paint();
+        const auto heading_rc =
+            cairo_surface_write_to_png(image, "build/alignment-heading-check.png");
+        cairo_surface_destroy(image);
+        if (heading_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("heading feedback image failed");
+        accept_text(
+            alignment,
+            R"({"op":"tracking_feedback","active":true,"time":10,"state":"restart","message":"Release View + Menu for heading correction, or keep holding to 5 seconds to restart tracking.","progress":0.5})");
+        image = alignment.paint();
+        const auto restart_rc =
+            cairo_surface_write_to_png(image, "build/alignment-restart-check.png");
+        cairo_surface_destroy(image);
+        if (restart_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("restart feedback image failed");
+        accept_text(
+            alignment,
+            R"({"op":"tracking_feedback","active":true,"time":10,"state":"ready","message":"Gamepad aligned. Point where you look and hold View + Menu for one second to set heading.","progress":1})");
+        image = alignment.paint();
+        const auto ready_rc = cairo_surface_write_to_png(image, "build/alignment-ready-check.png");
+        cairo_surface_destroy(image);
+        if (ready_rc != CAIRO_STATUS_SUCCESS)
+            throw std::runtime_error("ready feedback image failed");
+        std::cout << "{\"dashboard_check\":true}" << std::endl;
+        return 0;
+    } catch (const std::exception &error) {
+        std::cerr << error.what() << "\n";
+        return 1;
+    }
+}

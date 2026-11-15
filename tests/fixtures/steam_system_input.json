@@ -1,0 +1,1 @@
+"OnSystemButtonPress(h,F){const j=F===void 0;j&&this.SetSourceType(e.Vz.KEYBOARD_SIMULATOR);try{this.OnButtonDown(h,F),this.OnButtonUp(h,F)}finally{j&&this.SetSourceType(e.Vz.GAMEPAD)}}"

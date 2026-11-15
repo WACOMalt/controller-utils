@@ -1,0 +1,242 @@
+{
+  "action_manifest_version": 0,
+  "app_key": "openvr.component.vrcompositor",
+  "controller_type": "controllertracking_sc26",
+  "category": "steamvr_input",
+  "name": "Controller Utils native dashboard pointer",
+  "description": "Active only while Controller Utils owns the available right-hand role.",
+  "options": {},
+  "bindings": {
+    "/actions/lasermouse": {
+      "poses": [
+        {
+          "output": "/actions/lasermouse/in/Pointer",
+          "path": "/user/hand/right/pose/cursor"
+        }
+      ],
+      "sources": [
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "button",
+          "parameters": {
+            "click_activate_threshold": "0.5",
+            "click_deactivate_threshold": "0.45",
+            "off_haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/leftclick"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "button",
+          "parameters": {
+            "click_activate_threshold": "0.1",
+            "click_deactivate_threshold": "0.05",
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/LockMousePosition"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/bumper",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/leftclick"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/bumper",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/LockMousePosition"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/thumbstick",
+          "mode": "joystick",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/rightclick"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/b",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/back"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/grip",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/rightclick"
+            }
+          },
+          "parameters": {
+            "click_activate_threshold": "0.5",
+            "click_deactivate_threshold": "0.45",
+            "haptic_amplitude": "0"
+          }
+        },
+        {
+          "path": "/user/hand/right/input/cursorpad",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/leftclick"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/cursorpad",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/LockMousePosition"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trackpad",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse/in/rightclick"
+            }
+          }
+        }
+      ]
+    },
+    "/actions/lasermouse_secondary": {
+      "sources": [
+        {
+          "path": "/user/hand/right/input/activate",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "button",
+          "parameters": {
+            "click_activate_threshold": "0.55",
+            "click_deactivate_threshold": "0.5",
+            "haptic_amplitude": "0"
+          },
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/grip",
+          "mode": "trigger",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/bumper",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/cursorpad",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trackpad",
+          "mode": "button",
+          "inputs": {
+            "click": {
+              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
+            }
+          }
+        }
+      ]
+    },
+    "/actions/scroll_discrete": {
+      "sources": [
+        {
+          "path": "/user/hand/right/input/thumbstick",
+          "mode": "scroll",
+          "inputs": {
+            "scroll": {
+              "output": "/actions/scroll_discrete/in/scroll"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trackpad",
+          "mode": "scroll",
+          "parameters": {
+            "scroll_mode": "discrete"
+          },
+          "inputs": {
+            "scroll": {
+              "output": "/actions/scroll_discrete/in/scroll"
+            }
+          }
+        }
+      ]
+    },
+    "/actions/scroll_smooth": {
+      "sources": [
+        {
+          "path": "/user/hand/right/input/thumbstick",
+          "mode": "scroll",
+          "parameters": {
+            "scroll_mode": "smooth"
+          },
+          "inputs": {
+            "scroll": {
+              "output": "/actions/scroll_smooth/in/scroll"
+            }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trackpad",
+          "mode": "scroll",
+          "parameters": {
+            "scroll_mode": "smooth"
+          },
+          "inputs": {
+            "scroll": {
+              "output": "/actions/scroll_smooth/in/scroll"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -240,6 +240,18 @@ bool owned_gate(const GateLayout &layout, const Bytes &value) {
     const auto index = u32(value, layout.index_offset);
     return index == UINT32_MAX || index < layout.index_limit;
 }
+void validate_gate_start(const GateLayout &layout, const Bytes &site, const Bytes &cave,
+                         bool restoring) {
+    auto original = layout.original;
+    original.insert(original.end(), layout.following.begin(), layout.following.end());
+    auto patched = layout.redirect;
+    patched.insert(patched.end(), layout.following.begin(), layout.following.end());
+    const bool clean =
+        site == original && (cave == Bytes(layout.payload.size()) ||
+                             (layout.kind == GateKind::Beam && cave == layout.payload));
+    if (!clean && !(restoring && (site == original || site == patched) && owned_gate(layout, cave)))
+        throw std::runtime_error("Steam UI input code differs from the supported original.");
+}
 uint32_t validate_live_gate(const GateLayout &layout, const Bytes &site, const Bytes &cave) {
     auto expected = layout.redirect;
     expected.insert(expected.end(), layout.following.begin(), layout.following.end());

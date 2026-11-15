@@ -161,8 +161,12 @@ void TrackingSession::poll_helper(double now) {
             input_->state.gate_ready = true;
         else if (op == "beam_gate_ready")
             input_->state.beam_ready = true;
-        else if (op == "beam_gate_error")
+        else if (op == "beam_gate_error") {
             input_->state.beam_ready = input_->state.beam_hidden = false;
+            std::cerr << "Controller Utils beam: "
+                      << message(event.get(), "Native beam control is unavailable.", 1000) << '\n';
+        } else if (op == "input_gate_waiting" || op == "beam_gate_waiting")
+            std::cerr << "Controller Utils UI startup: " << message(event.get(), "", 1000) << '\n';
         else if (op == "input_gate_state") {
             try {
                 const auto index = json::integer(json::field(event.get(), "index"));
@@ -176,7 +180,9 @@ void TrackingSession::poll_helper(double now) {
             }
         } else if (op == "input_gate_error") {
             input_->state.gate_ready = false;
-            input_->fail(message(event.get(), "Native UI control is unavailable.", 1000));
+            const auto text = message(event.get(), "Native UI control is unavailable.", 1000);
+            std::cerr << "Controller Utils UI control: " << text << '\n';
+            input_->fail(text);
         } else if (op == "native_helper_restored")
             helper_restored_ = true;
         else if (op == "native_helper_error")

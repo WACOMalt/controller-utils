@@ -2,6 +2,7 @@
 #include <GL/gl.h>
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +20,10 @@
 #include "ui/dashboard.h"
 #include "ui/alignment.h"
 #include "ui/pointer.h"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "fake_openvr_interfaces.h"
+#pragma GCC diagnostic pop
 
 namespace {
 template <class Widget> bool accept_text(Widget &widget, const std::string &text) {
@@ -26,9 +31,98 @@ template <class Widget> bool accept_text(Widget &widget, const std::string &text
     return command && widget.accept(*command);
 }
 void discard(ct::ui::Event) {}
+struct PointerSystem : ct_test::System {
+    bool connected = true;
+    vr::ETrackedDeviceClass device_class = vr::TrackedDeviceClass_Controller;
+    std::string type = "frame_controller";
+    vr::ETrackedPropertyError error = vr::TrackedProp_Success;
+    bool IsTrackedDeviceConnected(uint32_t) override {
+        return connected;
+    }
+    vr::ETrackedDeviceClass GetTrackedDeviceClass(uint32_t) override {
+        return device_class;
+    }
+    uint32_t GetStringTrackedDeviceProperty(uint32_t, vr::ETrackedDeviceProperty property,
+                                            char *value, uint32_t size,
+                                            vr::ETrackedPropertyError *result) override {
+        assert(property == vr::Prop_ControllerType_String && size > type.size());
+        *result = error;
+        std::memcpy(value, type.c_str(), type.size() + 1);
+        return uint32_t(type.size() + 1);
+    }
+};
+void pointer_handoff() {
+    PointerSystem system;
+    Vr runtime;
+    runtime.system = &system;
+    std::vector<bool> events;
+    Dashboard dashboard(nullptr, [&](const ct::ui::Event &event) {
+        if (const auto change = std::get_if<ct::ui::PointerEnabled>(&event))
+            events.push_back(change->enabled);
+    });
+    ControllerPointer pointer(runtime, dashboard);
+    pointer.input_time = 100;
+    pointer.toggle(100, 0x80);
+    vr::VREvent_t event{};
+    event.eventType = vr::VREvent_ButtonPress;
+    event.data.controller.button = vr::k_EButton_Grip;
+    for (uint32_t device : {1u, 2u}) {
+        event.trackedDeviceIndex = device;
+        pointer.set_enabled(true);
+        events.clear();
+        pointer.event(event);
+        pointer.event(event);
+        assert(!pointer.enabled && !dashboard.input_enabled && events == std::vector<bool>{false});
+        pointer.buttons = 0x80;
+        pointer.input_time += .01;
+        assert(pointer.toggle(pointer.input_time, 0x80));
+        assert(events == (std::vector<bool>{false, true}));
+        pointer.buttons = 0;
+        pointer.input_time += .01;
+        pointer.toggle(pointer.input_time, 0x80);
+    }
+    const auto unchanged = [&] {
+        events.clear();
+        pointer.event(event);
+        assert(pointer.enabled && events.empty());
+    };
+    system.type = "controllertracking_sc26";
+    unchanged();
+    system.type = "";
+    unchanged();
+    system.type = "frame_controller";
+    system.error = vr::TrackedProp_UnknownProperty;
+    unchanged();
+    system.error = vr::TrackedProp_Success;
+    system.device_class = vr::TrackedDeviceClass_HMD;
+    unchanged();
+    system.device_class = vr::TrackedDeviceClass_Controller;
+    system.connected = false;
+    unchanged();
+    system.connected = true;
+    event.eventType = vr::VREvent_ButtonUnpress;
+    unchanged();
+    event.eventType = vr::VREvent_ButtonPress;
+    event.data.controller.button = vr::k_EButton_SteamVR_Trigger;
+    unchanged();
+    event.data.controller.button = vr::k_EButton_Grip;
+    event.trackedDeviceIndex = vr::k_unTrackedDeviceIndexInvalid;
+    unchanged();
+    event.trackedDeviceIndex = 2;
+    event.eventAgeSeconds = 1;
+    unchanged();
+}
 } // namespace
 int main() {
+    struct FontCleanup {
+        ~FontCleanup() {
+            ButtonGlyphs::instance().cache.clear();
+            cairo_debug_reset_static_data();
+            FcFini();
+        }
+    } fonts;
     try {
+        pointer_handoff();
         Dashboard dashboard(nullptr, discard);
         if (!dashboard.hit(320, 190) || std::string(dashboard.hit(320, 190)) != "toggle" ||
             dashboard.hit(20, 20) || dashboard.hit(270, 190))

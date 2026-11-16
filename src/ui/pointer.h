@@ -47,6 +47,24 @@ struct ControllerPointer {
         dashboard.dirty |= dashboard.input_enabled != value;
         dashboard.input_enabled = value;
     }
+    void event(const vr::VREvent_t &event) {
+        const auto device = event.trackedDeviceIndex;
+        if (!enabled || event.eventType != vr::VREvent_ButtonPress ||
+            event.data.controller.button != vr::k_EButton_Grip ||
+            !std::isfinite(event.eventAgeSeconds) || event.eventAgeSeconds < 0 ||
+            event.eventAgeSeconds > .15f || device >= vr::k_unMaxTrackedDeviceCount ||
+            !vr.system->IsTrackedDeviceConnected(device) ||
+            vr.system->GetTrackedDeviceClass(device) != vr::TrackedDeviceClass_Controller)
+            return;
+        char type[128]{};
+        vr::ETrackedPropertyError error = vr::TrackedProp_Success;
+        const auto size = vr.system->GetStringTrackedDeviceProperty(
+            device, vr::Prop_ControllerType_String, type, sizeof(type), &error);
+        if (error != vr::TrackedProp_Success || size < 2 || size > sizeof(type) ||
+            type[size - 1] != '\0' || std::string(type, size - 1) == "controllertracking_sc26")
+            return;
+        set_enabled(false);
+    }
     bool toggle(double now, uint32_t binding) {
         if (now - input_time > .1 || now - input_time < -.02) {
             set_enabled(false);

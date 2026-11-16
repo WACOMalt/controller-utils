@@ -102,6 +102,50 @@ class NativeReleaseTest(unittest.TestCase):
             timeout=5,
         )
 
+    def test_signed_older_baseline_keeps_current_components(self):
+        current_version = {"version": "0.1.4", "sequence": 10, "platform": "linuxarm64"}
+        (self.stage / "release.json").write_text(json.dumps(current_version))
+        current = self.build()
+        stage = self.base / "baseline-stage"
+        shutil.copytree(self.stage, stage)
+        baseline_version = {**current_version, "version": "0.1.3", "sequence": 9}
+        (stage / "release.json").write_text(json.dumps(baseline_version))
+        feed = self.base / "baseline-feed"
+        baseline = self.build(root=stage, output=feed, notes="Signed update test baseline")
+        metadata = json.loads((feed / "latest.json").read_text())
+        self.assertEqual(metadata["version"], "0.1.3")
+        self.assertEqual(metadata["sequence"], 9)
+        self.assertEqual(metadata["requirements"], self.requirements)
+        with (
+            tarfile.open(current["archive"]) as current_archive,
+            tarfile.open(baseline["archive"]) as baseline_archive,
+        ):
+            self.assertEqual(current_archive.getnames(), baseline_archive.getnames())
+            for name in current_archive.getnames():
+                if name != "release.json":
+                    self.assertEqual(
+                        current_archive.extractfile(name).read(),
+                        baseline_archive.extractfile(name).read(),
+                        name,
+                    )
+            self.assertEqual(
+                json.load(current_archive.extractfile("release.json")), current_version
+            )
+            self.assertEqual(
+                json.load(baseline_archive.extractfile("release.json")), baseline_version
+            )
+        result = subprocess.run(
+            [
+                str(ROOT / "build/release_check"),
+                str(feed),
+                str(stage / "assets/update-public.pem"),
+                str(self.base / "baseline-unpacked"),
+            ],
+            capture_output=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_signed_native_package_and_tamper_rejection(self):
         (self.stage / "assets/tracking-calibration.json").write_text("private calibration")
         (self.stage / "tools").mkdir()

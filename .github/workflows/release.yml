@@ -101,11 +101,13 @@ jobs:
                 --connect-timeout 5 --max-time 30 --max-filesize 64 \
                 --output build/previous.sig \
                 "https://github.com/kallupx/controller-utils/releases/download/$tag/latest.sig"
-              ./build/release_check --metadata build/previous.json build/previous.sig assets/update-public.pem > build/previous-release.json
+              openssl pkeyutl -verify -pubin -inkey assets/update-public.pem -rawin \
+                -in build/previous.json -sigfile build/previous.sig
               python - <<'PY'
           import json
-          previous = json.load(open("build/previous-release.json"))
+          previous = json.load(open("build/previous.json"))
           current = json.load(open("release.json"))
+          assert type(previous["sequence"]) is int and 0 < previous["sequence"] < 2**63, "Invalid previous release sequence"
           assert current["sequence"] > previous["sequence"], "Increase release.json sequence"
           assert tuple(map(int, current["version"].split("."))) > tuple(map(int, previous["version"].split("."))), "Increase release.json version"
           PY
@@ -126,6 +128,31 @@ jobs:
             --key "$keyfile" --output dist
           artifact=$(python -c 'import json; print(json.load(open("dist/latest.json"))["artifact"])')
           (cd dist && sha256sum "$artifact" latest.json latest.sig latest-stable.json latest-stable.sig > SHA256SUMS)
+          if test -f build/previous.json
+          then
+            cp -a build/release-stage build/update-test-stage
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          previous = json.load(open("build/previous.json"))
+          path = Path("build/update-test-stage/release.json")
+          baseline = json.loads(path.read_text())
+          baseline.update(version=previous["version"], sequence=previous["sequence"])
+          path.write_text(json.dumps(baseline, indent=2) + "\n")
+          PY
+            python tools/package_release.py \
+              --app-stage build/update-test-stage --requirements build/release-requirements.json \
+              --key "$keyfile" --output build/update-test-feed \
+              --notes 'Signed baseline for testing automatic updates'
+          fi
+      - name: Save signed update test baseline
+        if: ${{ hashFiles('build/update-test-feed/latest.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: controller-utils-update-test-baseline-${{ github.ref_name }}
+          path: build/update-test-feed/
+          if-no-files-found: error
+          retention-days: 7
       - name: Publish complete GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

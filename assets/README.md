@@ -14,10 +14,7 @@ adds UVs, shading normals and material maps without moving vertices.
 Texture donor: **Steam Controller 2025 by Ranguel**, from
 [Sketchfab](https://sketchfab.com/3d-models/steam-controller-2025-fe10b1da83e54dae953f15d898ad6197),
 licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-Markings, grain and rubber roughness were mapped to Valve's CAD.
-Colors and roughness were assigned in code. Shading normals were adjusted around
-the shell crease and thumbstick junctions. No generative image model was used.
-The Valve CAD terms above continue to apply.
+The donor textures were mapped to Valve's CAD.
 
 The app icon is `Steam Controller/Vector/controller_steam_new.svg` from
 [Kenney's Input Prompts 1.5A](https://kenney.nl/assets/input-prompts), licensed CC0.

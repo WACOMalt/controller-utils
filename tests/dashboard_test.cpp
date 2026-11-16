@@ -45,7 +45,7 @@ struct PointerSystem : ct_test::System {
     uint32_t GetStringTrackedDeviceProperty(uint32_t device, vr::ETrackedDeviceProperty property,
                                             char *value, uint32_t size,
                                             vr::ETrackedPropertyError *result) override {
-        const auto name = device == 2 ? "controllertracking_sc26" : type;
+        const auto name = device == 2 ? "controllerutils_sc26" : type;
         assert(property == vr::Prop_ControllerType_String && size > name.size());
         *result = error;
         std::memcpy(value, name.c_str(), name.size() + 1);

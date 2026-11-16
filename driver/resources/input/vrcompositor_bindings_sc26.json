@@ -132,56 +132,6 @@
               "output": "/actions/lasermouse_secondary/in/switchlaserhand"
             }
           }
-        },
-        {
-          "path": "/user/hand/right/input/trigger",
-          "mode": "button",
-          "parameters": {
-            "click_activate_threshold": "0.55",
-            "click_deactivate_threshold": "0.5",
-            "haptic_amplitude": "0"
-          },
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
-            }
-          }
-        },
-        {
-          "path": "/user/hand/right/input/grip",
-          "mode": "trigger",
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
-            }
-          }
-        },
-        {
-          "path": "/user/hand/right/input/bumper",
-          "mode": "button",
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
-            }
-          }
-        },
-        {
-          "path": "/user/hand/right/input/cursorpad",
-          "mode": "button",
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
-            }
-          }
-        },
-        {
-          "path": "/user/hand/right/input/trackpad",
-          "mode": "button",
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse_secondary/in/switchlaserhand"
-            }
-          }
         }
       ]
     },

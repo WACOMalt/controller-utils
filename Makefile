@@ -148,8 +148,8 @@ build/native/src/update/client.o build/native/src/app/host.o build/sanitize/src/
 build/native_replay: tests/native_replay.cpp tests/filter_fixture.h tests/input_control_replay.h tests/session_replay.h tests/app_replay.h tests/download_replay.h tests/update_client_replay.h tests/acquisition_replay.h tests/fake_controller.h tests/fake_native_queue.h $(NATIVE_OBJECTS) | build/fake_dns.so
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $(filter %.cpp %.o,$^) -o $@ $(NATIVE_LIBS)
 
-build/native_core_test: tests/native_core_test.cpp $(NATIVE_OBJECTS)
-	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $^ -o $@ $(NATIVE_LIBS)
+build/native_core_test: tests/native_core_test.cpp tests/input_control_replay.h tests/filter_fixture.h $(NATIVE_OBJECTS)
+	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $(filter %.cpp %.o,$^) -o $@ $(NATIVE_LIBS)
 
 build/controller_device_test: tests/controller_device_test.cpp tests/fake_controller.h $(NATIVE_OBJECTS)
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags json-c) $(filter %.cpp %.o,$^) -o $@ $(NATIVE_LIBS)
@@ -289,6 +289,7 @@ build/sanitize/%.o: %.cpp Makefile
 	$(CXX) $(CXXFLAGS) -pthread $(SANITIZE_FLAGS) $(shell pkg-config --cflags json-c libcrypto libunwind-ptrace libcurl libarchive libsystemd) -MMD -MP -c $< -o $@
 
 build/sanitize/native_replay: | build/fake_dns.so
+build/sanitize/native_core_test: tests/input_control_replay.h tests/filter_fixture.h
 build/sanitize/native_replay: tests/filter_fixture.h tests/input_control_replay.h tests/session_replay.h tests/app_replay.h tests/download_replay.h tests/update_client_replay.h tests/acquisition_replay.h tests/fake_controller.h tests/fake_native_queue.h
 build/sanitize/controller_device_test: tests/fake_controller.h
 build/sanitize/controller_reader_test: tests/fake_controller.h

@@ -283,6 +283,7 @@ void test_app_input_wire_and_disable() {
     for (unsigned i = 0; i < 3; ++i)
         assert(pose.vecPosition[i] == value.position[i]);
     value = controls(100, 100.04);
+    value.flags |= 4;
     value.trigger = .8f;
     value.grip = .7f;
     value.stick_x = -.25f;
@@ -293,6 +294,7 @@ void test_app_input_wire_and_disable() {
     value.scroll_x = .3f;
     value.scroll_y = -.4f;
     f.ui(value, value.time);
+    assert(f.context.input.values.at("/input/activate/click") == 0);
     for (const char *path :
          {"/input/trigger/click", "/input/trigger/touch", "/input/grip/click", "/input/grip/touch",
           "/input/thumbstick/click", "/input/thumbstick/touch", "/input/b/click",

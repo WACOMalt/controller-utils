@@ -2,6 +2,7 @@
 #include "controller/sensor_clock.h"
 #include "helper/acquisition_reader.h"
 #include "interaction/gestures.h"
+#include "input_control_replay.h"
 #include "platform/json.h"
 #include "steamvr/codec.h"
 #include "tracking/acquisition.h"
@@ -28,6 +29,31 @@ template <class Function> void rejects(Function function) {
 } // namespace
 int main() {
     using namespace ct;
+    {
+        input_replay::Backend backend;
+        InputControl control(backend, "TEST1234");
+        control.state.enabled = control.state.native_active = true;
+        control.update_beam(100);
+        assert(!control.state.activation_confirmed);
+        backend.selected = true;
+        backend.device.reset();
+        control.update_beam(100.01);
+        assert(!control.state.activation_confirmed);
+        backend.device = 3;
+        control.update_beam(100.02);
+        assert(control.state.activation_confirmed);
+        backend.selected = false;
+        control.update_beam(100.03);
+        assert(control.state.activation_confirmed);
+        control.controls(std::nullopt, false);
+        assert(!control.state.activation_confirmed && !control.state.native_active);
+        control.state.enabled = control.state.native_active = true;
+        control.update_beam(100.04);
+        assert(!control.state.activation_confirmed);
+        backend.selected = true;
+        control.update_beam(100.05);
+        assert(control.state.activation_confirmed);
+    }
     {
         SteamShortcuts keys;
         keys.update(0, 10, true, true);
@@ -150,6 +176,18 @@ int main() {
     assert(wire::imu(imu, 10, 9));
     auto input = bridge_input(10, 10.1, std::nullopt, {}, false);
     assert(wire::app_input(input, 10.1, 0, 10));
+    InputControls confirmed;
+    confirmed.activate = false;
+    input = bridge_input(10, 10.1, std::nullopt, confirmed, true);
+    assert(wire::app_input(input, 10.1, 0, 10));
+    wire::AppInput selected{};
+    std::memcpy(&selected, input.data, sizeof(selected));
+    assert(selected.flags == 5);
+    for (auto flags : {4u, 8u}) {
+        selected.flags = flags;
+        std::memcpy(input.data, &selected, sizeof(selected));
+        assert(!wire::app_input(input, 10.1, 0, 10));
+    }
     wire::PoseBlock pose{};
     pose.timestamp = -1;
     pose.orientation[0] = nan;

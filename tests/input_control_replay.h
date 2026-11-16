@@ -65,6 +65,10 @@ class Backend final : public ct::InputBackend {
             throw std::runtime_error("wrong pointer identity");
         return device;
     }
+    bool pointer_selected(unsigned) override {
+        return selected;
+    }
+    bool selected = false;
 };
 inline j::Value snapshot(ct::InputControl &control, Backend &backend, std::optional<bool> result,
                          const std::string &error) {

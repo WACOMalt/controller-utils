@@ -39,6 +39,7 @@ class InputBackend {
     virtual void helper_command(uint8_t command) = 0;
     virtual bool release_controls() = 0;
     virtual std::optional<unsigned> pointer_device(const std::string &serial) = 0;
+    virtual bool pointer_selected(unsigned device) = 0;
 };
 
 class InputControl {
@@ -55,6 +56,7 @@ class InputControl {
         uint32_t buttons = 0;
         bool enabled = false, typing = false;
         bool gate_ready = false, native_active = false;
+        bool activation_confirmed = false;
         bool beam_ready = false, beam_hidden = false;
         std::optional<unsigned> beam_device;
         double last_beam_heartbeat = 0;

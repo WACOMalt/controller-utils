@@ -70,6 +70,7 @@ class TrackingSession final : public TrackingSessionView, private InputBackend {
     void helper_command(uint8_t command) override;
     bool release_controls() override;
     std::optional<unsigned> pointer_device(const std::string &serial) override;
+    bool pointer_selected(unsigned device) override;
 
   public:
     InitialAcquisition initial;

@@ -175,7 +175,8 @@ inline bool app_input(const Command &command, double now, double previous, doubl
         return false;
     AppInput value;
     std::memcpy(&value, command.data, sizeof(value));
-    if (value.id != ControllerId || value.flags & ~3u || value.buttons & ~255u || value.reserved ||
+    if (value.id != ControllerId || value.flags & ~7u ||
+        ((value.flags & 4u) && !(value.flags & 1u)) || value.buttons & ~255u || value.reserved ||
         value.session_start != session_start || !std::isfinite(value.time) ||
         value.time < session_start || value.time <= previous || now - value.time < -.02 ||
         now - value.time > .15 || !std::isfinite(value.pose_time))

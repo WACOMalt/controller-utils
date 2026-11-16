@@ -212,7 +212,6 @@ struct Scene {
         vr::VREvent_t event{};
         for (int count = 0; count < 64 && vr.system->PollNextEvent(&event, sizeof(event));
              ++count) {
-            pointer.event(event);
             if (event.eventType == vr::VREvent_Quit) {
                 running = false;
                 dashboard.emit(ct::ui::Quit{});

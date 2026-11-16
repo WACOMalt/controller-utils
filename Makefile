@@ -345,7 +345,7 @@ check-sanitize: build/sanitize/native_replay $(addprefix build/sanitize/,$(SANIT
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 CONTROLLER_UTILS_REPLAY=$(CURDIR)/build/sanitize/native_replay python3 -m unittest discover -s tests -p test_native_update_client.py -v
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 CONTROLLER_UTILS_REPLAY=$(CURDIR)/build/sanitize/native_replay python3 -m unittest discover -s tests -p test_steam_ui_transport.py -v
 
-build/dashboard_test: tests/dashboard_test.cpp tests/fake_openvr_interfaces.h src/ui/messages.cpp src/ui/messages.h src/platform/json.cpp src/ui/dashboard.h src/ui/alignment.h src/ui/pointer.h src/ui/button_glyphs.h src/ui/vr.h src/ui/body_pose.h src/interaction/pointer_math.h src/interaction/pose_math.h src/ui/gaze.h third_party/openvr/openvr.h
+build/dashboard_test: tests/dashboard_test.cpp tests/fake_openvr_interfaces.h src/steamvr/controller_input.h src/ui/messages.cpp src/ui/messages.h src/platform/json.cpp src/ui/dashboard.h src/ui/alignment.h src/ui/pointer.h src/ui/button_glyphs.h src/ui/vr.h src/ui/body_pose.h src/interaction/pointer_math.h src/interaction/pose_math.h src/ui/gaze.h third_party/openvr/openvr.h
 	mkdir -p build
 	$(CXX) $(CXXFLAGS) $(shell pkg-config --cflags gl json-c cairo fontconfig) $(filter %.cpp,$^) -o $@ $(shell pkg-config --libs gl json-c cairo fontconfig) -ldl
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -7,6 +8,9 @@
 #include <openvr.h>
 #include "interaction/pose_math.h"
 #include "steamvr/runtime.h"
+#include "steamvr/controller_input.h"
+#include "steamvr/queue_api.h"
+#include "steamvr/compatibility.h"
 
 inline double native_time() {
     timespec time{};
@@ -36,11 +40,26 @@ struct Vr {
     ct::Runtime *shared = nullptr;
     vr::IVRSystem *system = nullptr;
     vr::IVROverlay *overlay = nullptr;
+    ct::steamvr::ControllerInput controller_input;
     Vr() = default;
     explicit Vr(ct::Runtime &runtime)
         : shared(&runtime), system(runtime.system), overlay(runtime.overlay) {
         if (!system || !overlay)
             throw std::logic_error("Renderer requires the shared overlay runtime");
+        try {
+            const auto paths = runtime.interface("FnTable:IVRPaths_002");
+            const auto properties = runtime.interface("FnTable:IVRProperties_001");
+            const auto module =
+                ct::steamvr::Module::loaded(paths, ct::steamvr::compatibility::VrClient.path);
+            const auto path_functions = ct::steamvr::read_functions<4>(paths, module);
+            const auto property_functions = ct::steamvr::read_functions<4>(properties, module);
+            controller_input.read_path =
+                reinterpret_cast<decltype(controller_input.read_path)>(path_functions[0]);
+            controller_input.container =
+                reinterpret_cast<decltype(controller_input.container)>(property_functions[3]);
+        } catch (const std::exception &error) {
+            std::cerr << "Frame controller grip handoff unavailable: " << error.what() << '\n';
+        }
     }
     Vr(const Vr &) = delete;
     Vr &operator=(const Vr &) = delete;

@@ -203,6 +203,13 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         "preserved calibration",
         0o600,
     )
+    updates = root / BASE.relative_to("/") / "app-data/updates"
+    write(updates / "transaction.json", "previous application update", 0o600)
+    write(updates / "previous-app/release.json", "previous application", 0o600)
+    if case == "updates-link":
+        shutil.rmtree(updates)
+        write(home / "other-cache/sentinel", "preserved cache target", 0o600)
+        updates.symlink_to("/home/steamos/other-cache", target_is_directory=True)
     legacy = root / BASE.with_name("controllertracking").relative_to("/")
     if case == "legacy-installed":
         write(legacy / "app/uninstall.sh", "previous uninstaller", 0o755)
@@ -361,6 +368,11 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
                 if Path("/home/steamos/systemctl.log").exists()
                 else [],
                 "steamvr_masked": Path("/home/steamos/steamvr.masked").exists(),
+                "stale_update_state": (BASE / "app-data/updates/transaction.json").exists()
+                or (BASE / "app-data/updates/previous-app").exists(),
+                "cache_target": Path("/home/steamos/other-cache/sentinel").read_text()
+                if Path("/home/steamos/other-cache/sentinel").is_file()
+                else None,
                 "legacy_settings": (
                     BASE.with_name("controllertracking") / "app-data/settings.json"
                 ).read_text()
@@ -429,6 +441,7 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertNotEqual(result["repeat_status"], 0)
         self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
         self.assertEqual(result["settings"], "preserved settings")
+        self.assertFalse(result["stale_update_state"])
         self.assertFalse(result["recovery_exists"])
         self.assertFalse(result["app_exists"] or result["root_exists"] or result["service_exists"])
         self.assertEqual(result["native"][0].split()[0], "1000")
@@ -464,7 +477,16 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
         self.assertEqual(result["settings"], "preserved settings")
         self.assertEqual(result["calibration"], "preserved calibration")
+        self.assertFalse(result["stale_update_state"])
         self.assertIsNone(result["legacy_settings"])
+
+    def test_reinstall_discards_update_cache_link_without_following_it(self):
+        result = self.check_case("updates-link")
+        self.assertEqual(result["status"], 0, result["stderr"])
+        self.assertFalse(result["stale_update_state"])
+        self.assertEqual(result["cache_target"], "preserved cache target")
+        self.assertEqual(result["settings"], "preserved settings")
+        self.assertEqual(result["calibration"], "preserved calibration")
 
     def test_previous_settings_conflicts_and_symlinks_are_preserved(self):
         for case in ("legacy-data-conflict", "legacy-data-link"):

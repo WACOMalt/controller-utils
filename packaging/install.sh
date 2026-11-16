@@ -107,6 +107,7 @@ install -m 0755 "$work/package/controller-utils-launcher" "$base/controller-util
 mv -- "$work/package" "$base/app"
 app_installed=true
 ln -s app/native-driver "$base/native-driver"
+rm -rf -- "$base/app-data/updates"
 mkdir -p "$HOME/.local/share/systemd/user"
 service_installed=true
 install -m 0644 "$base/app/packaging/controller-utils-update.service" "$service"

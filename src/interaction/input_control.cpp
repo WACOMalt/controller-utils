@@ -210,7 +210,7 @@ bool InputControl::poll(double now, bool tracking_ready) {
 }
 void InputControl::update_beam(double now) {
     if (state.enabled && state.native_active && !state.activation_confirmed) {
-        const auto device = backend_.pointer_device("controllertracking-sc26-input-" + serial_);
+        const auto device = backend_.pointer_device("controllerutils-sc26-input-" + serial_);
         state.activation_confirmed = device && backend_.pointer_selected(*device);
     }
     if (!state.beam_ready)

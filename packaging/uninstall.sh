@@ -33,7 +33,11 @@ cleanup() {
     status=$?
     trap - EXIT
     if "$masked"; then systemctl --user unmask --runtime steamvr.service || status=1; fi
-    if "$resume"; then systemctl --user start steamvr.service || status=1; fi
+    if "$resume" && ! systemctl --user start steamvr.service &&
+       ! systemctl --user is-active --quiet steamvr.service
+    then
+        printf '%s\n' 'SteamVR did not finish restarting. Restart Frame if VR does not return.' >&2
+    fi
     exit "$status"
 }
 trap cleanup EXIT

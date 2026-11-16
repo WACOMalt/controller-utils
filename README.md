@@ -8,7 +8,7 @@ The app displays a 3D controller model in VR. You can navigate Steam's UI with a
 laser pointer or touchpad cursor, and type with both touchpads. Steam Controller
 tracking also works while Frame's own controllers are being tracked.
 
-![Controller Utils settings](docs/controller-utils.png)
+![Controller Utils running on Steam Frame](docs/controller-utils.png)
 
 Tracking relies on a single IR LED. It can become unstable or drift when the LED
 is hidden from the headset's cameras. Position tracking recovers when you hold
@@ -22,6 +22,8 @@ Steam Controller.
 The app is experimental.
 
 ## Install
+
+Supports the stable and beta SteamOS channels. The installer detects your channel.
 
 Open a terminal on Frame and run:
 

@@ -115,7 +115,11 @@ def sandbox(case, directory, parent_namespace):
         '#!/bin/sh\nprintf \'%s %s\\n\' "$(id -u)" "$*" >> /home/steamos/registration.log\n',
         0o755,
     )
-    if case in ("registration-failure", "partial-registration-failure"):
+    if case in (
+        "registration-failure",
+        "partial-registration-failure",
+        "registration-failure-restart-canceled",
+    ):
         write(source / "controller-utils", "#!/bin/sh\nexit 1\n", 0o755)
     write(source / "native-driver/driver.vrdrivermanifest", "driver fixture")
     write(source / "app-data-marker", "preserved")
@@ -158,9 +162,21 @@ case "$*" in
     '--user show steamvr.service -p LoadState --value')
         if [ -e /home/steamos/steamvr.masked ]; then printf '%s\\n' masked; else printf '%s\\n' loaded; fi ;;
     '--user mask --runtime steamvr.service') touch /home/steamos/steamvr.masked ;;
-    '--user stop steamvr.service') [ -e /home/steamos/steamvr.masked ] || exit 1 ;;
+    '--user stop steamvr.service')
+        [ -e /home/steamos/steamvr.masked ] || exit 1
+        [ -e /home/steamos/steamvr.inactive ] || touch /home/steamos/steamvr.inactive ;;
     '--user unmask --runtime steamvr.service') rm /home/steamos/steamvr.masked ;;
-    '--user start steamvr.service') [ ! -e /home/steamos/steamvr.masked ] || exit 1 ;;
+    '--user start steamvr.service')
+        [ ! -e /home/steamos/steamvr.masked ] || exit 1
+        if [ -e /home/steamos/restart-failed ]; then
+            printf '%s\\n' 'Job for steamvr.service failed.' >&2
+            exit 1
+        fi
+        rm -f /home/steamos/steamvr.inactive
+        if [ -e /home/steamos/restart-canceled ]; then
+            printf '%s\\n' 'Job for steamvr.service canceled.' >&2
+            exit 1
+        fi ;;
 esac
 """,
         0o755,
@@ -231,8 +247,12 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
     )
     os.chroot(root)
     os.chdir("/")
-    if case == "registration-failure":
+    if case in ("registration-failure", "registration-failure-restart-canceled"):
         (PRIVILEGED / "controller-utils-updater").unlink()
+    if case in ("restart-canceled", "registration-failure-restart-canceled"):
+        write(Path("/home/steamos/restart-canceled"), "superseded start job")
+    elif case == "restart-failed":
+        write(Path("/home/steamos/restart-failed"), "failed start job")
     if case == "service-link":
         SERVICE.rmdir()
         SERVICE.symlink_to(PRIVILEGED, target_is_directory=True)
@@ -290,11 +310,19 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         capture_output=True,
         text=True,
     )
-    if case in ("normal", "remove-failure", "legacy-data") and result.returncode == 0:
+    if result.returncode == 0 and case in (
+        "normal",
+        "remove-failure",
+        "legacy-data",
+        "restart-canceled",
+        "remove-restart-failed",
+    ):
         repeated = subprocess.run(command, capture_output=True, text=True).returncode
         write(BASE / "app-data/startup-recovery", "disabled recovery")
         if case == "remove-failure":
             write(Path("/home/steamos/fail-uninstall"), "fail")
+        elif case == "remove-restart-failed":
+            write(Path("/home/steamos/restart-failed"), "failed start job")
         removed = subprocess.run(
             [*user_command, "/bin/sh", str(BASE / "app/uninstall.sh")],
             capture_output=True,
@@ -507,6 +535,43 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertTrue(result["app_exists"] and result["root_exists"])
         self.assertFalse(result["steamvr_masked"])
         self.assertEqual(result["systemctl"][-1], "1000 --user start steamvr.service")
+
+    def test_canceled_restart_does_not_fail_completed_install_or_removal(self):
+        result = self.check_case("restart-canceled")
+        self.assertEqual(result["status"], 0, result["stderr"])
+        self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
+        self.assertIn("Job for steamvr.service canceled.", result["stderr"])
+        self.assertIn("Job for steamvr.service canceled.", result["remove_stderr"])
+        self.assertNotIn("Restart Frame", result["stderr"] + result["remove_stderr"])
+        self.assertFalse(result["app_exists"] or result["root_exists"] or result["service_exists"])
+        self.assertFalse(result["steamvr_masked"])
+        self.assertEqual(result["settings"], "preserved settings")
+        self.assertEqual(result["calibration"], "preserved calibration")
+
+    def test_failed_restart_warns_without_failing_completed_install_or_removal(self):
+        for case in ("restart-failed", "remove-restart-failed"):
+            with self.subTest(case=case):
+                result = self.check_case(case)
+                self.assertEqual(result["status"], 0, result["stderr"])
+                if case == "remove-restart-failed":
+                    self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
+                    self.assertIn("Restart Frame", result["remove_stderr"])
+                    self.assertFalse(result["app_exists"] or result["root_exists"])
+                else:
+                    self.assertIn("Restart Frame", result["stderr"])
+                    self.assertTrue(result["app_exists"] and result["root_exists"])
+                self.assertFalse(result["steamvr_masked"])
+                self.assertEqual(result["settings"], "preserved settings")
+                self.assertEqual(result["calibration"], "preserved calibration")
+
+    def test_canceled_restart_does_not_hide_installation_failure(self):
+        result = self.check_case("registration-failure-restart-canceled")
+        self.assertNotEqual(result["status"], 0)
+        self.assertIn("Job for steamvr.service canceled.", result["stderr"])
+        self.assertIn("Installation did not finish", result["stderr"])
+        self.assertFalse(result["app_exists"] or result["root_exists"] or result["service_exists"])
+        self.assertFalse(result["steamvr_masked"])
+        self.assertEqual(result["settings"], "preserved settings")
 
     def test_existing_steamvr_mask_is_preserved(self):
         result = self.check_case("masked-runtime")

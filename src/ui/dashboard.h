@@ -24,7 +24,7 @@ struct Dashboard {
     std::string repair_status = "Helper permissions are restored automatically.";
     std::string app_version = "Development", update_status = "Update server is not configured.";
     std::string input_state = "Off";
-    bool steam_shortcuts = false;
+    bool steam_shortcuts = true;
     std::string pointer_label = "R4";
     int brightness = 100, smoothing = 40, page = 0, pointer_buttons = 0x80;
     cairo_surface_t *artwork = nullptr;

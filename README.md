@@ -14,6 +14,7 @@ Tracking relies on a single IR LED. It can become unstable or drift when the LED
 is hidden from the headset's cameras. Position tracking recovers when you hold
 the controller with the LED visible to the headset again.
 
+The app supports the latest stable and beta SteamOS releases.
 Since the driver interfaces directly with Frame's native tracking services,
 SteamOS and SteamVR updates can break tracking and require an app update. I'll try
 to maintain this at least until Valve releases official tracking support for the
@@ -23,15 +24,14 @@ The app is experimental.
 
 ## Install
 
-Supports the stable and beta SteamOS channels. The installer detects your channel.
-
 Open a terminal on Frame and run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packaging/bootstrap.py | python3 -
 ```
 
-The script downloads the latest release, verifies it and installs the app.
+The script detects your SteamOS channel, downloads the latest release, verifies
+it and installs the app.
 Installation asks for your password and briefly restarts SteamVR. Set a password
 with `passwd` first if you haven't already.
 
@@ -56,7 +56,7 @@ For an existing installation, use updates or uninstall before installing again.
 | Steam, hold 1 second then release | Recenter the view |
 | Steam, double press | Toggle passthrough |
 
-Enable Steam shortcuts in Controls for recenter and passthrough.
+Steam shortcuts are enabled by default. Change this in Controls.
 
 With UI control on, look at the keyboard and touch either pad to type. Both pads
 control the typing cursors. Typing stays active while you look away. Release both

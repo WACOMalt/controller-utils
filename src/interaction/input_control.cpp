@@ -53,6 +53,7 @@ void InputControl::controls(const std::optional<ControllerInput> &input, bool en
         state.error.reset();
 }
 void InputControl::disable() {
+    state.activation_confirmed = false;
     std::vector<std::string> errors;
     if (state.beam_hidden) {
         try {
@@ -208,6 +209,10 @@ bool InputControl::poll(double now, bool tracking_ready) {
     }
 }
 void InputControl::update_beam(double now) {
+    if (state.enabled && state.native_active && !state.activation_confirmed) {
+        const auto device = backend_.pointer_device("controllertracking-sc26-input-" + serial_);
+        state.activation_confirmed = device && backend_.pointer_selected(*device);
+    }
     if (!state.beam_ready)
         return;
     const bool touch =

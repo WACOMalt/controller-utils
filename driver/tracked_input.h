@@ -11,7 +11,7 @@
 namespace ct {
 struct TrackedInputState {
     double time = 0;
-    bool enabled = false;
+    bool enabled = false, activate = true;
     float trigger = 0, grip = 0, stick_x = 0, stick_y = 0;
     float pad_x = 0, pad_y = 0, scroll_x = 0, scroll_y = 0;
     bool bumper = false, back = false, stick_click = false, stick_touch = false;
@@ -303,7 +303,7 @@ class TrackedInput final : public vr::ITrackedDeviceServerDriver {
         const double offset = state.time - now;
         bool ok = true;
         // Do not short circuit: all components must receive releases even if one update fails.
-        ok &= set_boolean(activate, true, offset);
+        ok &= set_boolean(activate, state.activate, offset);
         ok &= set_scalar(trigger_value, state.trigger, offset);
         ok &= set_boolean(trigger_click, trigger_down, offset);
         ok &= set_boolean(trigger_touch, state.trigger > .05f, offset);

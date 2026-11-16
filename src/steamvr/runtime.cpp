@@ -91,6 +91,16 @@ std::optional<RigidPose> Runtime::head_pose(int origin) {
             result[i * 4 + j] = pose.mDeviceToAbsoluteTracking.m[i][j];
     return result;
 }
+std::optional<unsigned> Runtime::primary_dashboard_device() {
+    if (!initialized_)
+        throw std::logic_error("OpenVR runtime is closed");
+    if (overlay) {
+        const auto device = overlay->GetPrimaryDashboardDevice();
+        if (device < vr::k_unMaxTrackedDeviceCount && system->IsTrackedDeviceConnected(device))
+            return device;
+    }
+    return std::nullopt;
+}
 QueueContext &Runtime::queues() {
     if (!initialized_)
         throw std::logic_error("OpenVR runtime is closed");

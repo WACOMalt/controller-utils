@@ -104,11 +104,13 @@ int main() {
     Fixture selection;
     selection.tick(25);
     assert(selection.input.values.at("/input/activate/click") == 1);
+    selection.state.activate = false;
     for (int i = 1; i <= 30; ++i) {
         selection.state.pad_touch = i % 2;
         selection.state.scroll_touch = !selection.state.pad_touch;
         selection.tick(25 + i * .01);
-        assert(selection.input.values.at("/input/activate/click") == 1);
+        assert(selection.input.values.at("/input/activate/click") == 0);
+        assert(selection.device.active());
         assert(selection.input.values.at("/input/trigger/click") == 0);
         assert(selection.input.values.at("/input/cursorpad/click") == 0);
     }
@@ -116,7 +118,26 @@ int main() {
     selection.tick(25.31);
     selection.check_released();
     selection.state.enabled = true;
+    selection.state.activate = true;
     selection.tick(25.32);
+    assert(selection.input.values.at("/input/activate/click") == 1);
+    selection.state.trigger = selection.state.grip = .8f;
+    selection.state.activate = false;
+    selection.state.pad_click = selection.state.scroll_click = selection.state.bumper = true;
+    selection.tick(25.42);
+    assert(selection.input.values.at("/input/activate/click") == 0);
+    assert(selection.input.values.at("/input/trigger/click") == 1);
+    assert(selection.input.values.at("/input/cursorpad/click") == 1);
+    selection.state.enabled = false;
+    selection.tick(25.43);
+    selection.check_released();
+    selection.state.enabled = true;
+    selection.state.activate = true;
+    selection.tick(25.44);
+    assert(selection.device.active() && selection.input.values.at("/input/activate/click") == 0);
+    selection.state.trigger = selection.state.grip = 0;
+    selection.state.pad_click = selection.state.scroll_click = selection.state.bumper = false;
+    selection.tick(25.6);
     assert(selection.input.values.at("/input/activate/click") == 1);
 
     Fixture cursor;

@@ -2,6 +2,7 @@
 #include <GL/gl.h>
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +20,10 @@
 #include "ui/dashboard.h"
 #include "ui/alignment.h"
 #include "ui/pointer.h"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "fake_openvr_interfaces.h"
+#pragma GCC diagnostic pop
 
 namespace {
 template <class Widget> bool accept_text(Widget &widget, const std::string &text) {
@@ -26,9 +31,146 @@ template <class Widget> bool accept_text(Widget &widget, const std::string &text
     return command && widget.accept(*command);
 }
 void discard(ct::ui::Event) {}
+struct PointerSystem : ct_test::System {
+    bool connected = true;
+    vr::ETrackedDeviceClass device_class = vr::TrackedDeviceClass_Controller;
+    std::string type = "frame_controller";
+    vr::ETrackedPropertyError error = vr::TrackedProp_Success;
+    bool IsTrackedDeviceConnected(uint32_t device) override {
+        return connected && device >= 1 && device <= 3;
+    }
+    vr::ETrackedDeviceClass GetTrackedDeviceClass(uint32_t) override {
+        return device_class;
+    }
+    uint32_t GetStringTrackedDeviceProperty(uint32_t device, vr::ETrackedDeviceProperty property,
+                                            char *value, uint32_t size,
+                                            vr::ETrackedPropertyError *result) override {
+        const auto name = device == 2 ? "controllertracking_sc26" : type;
+        assert(property == vr::Prop_ControllerType_String && size > name.size());
+        *result = error;
+        std::memcpy(value, name.c_str(), name.size() + 1);
+        return uint32_t(name.size() + 1);
+    }
+};
+struct GripInput {
+    using Input = ct::steamvr::ControllerInput;
+    inline static uint64_t down = 0;
+    inline static int result = 0, error = 0;
+    inline static uint32_t tag = 33, size = 72, type = 1, visibility = 3;
+    inline static uint8_t invalid_boolean = 0;
+    inline static unsigned reads = 0;
+    static uint64_t container(uint32_t device) {
+        assert(device == 1 || device == 3);
+        return device + 100;
+    }
+    static int read(uint64_t root, Input::PathRead *batch, uint32_t count) {
+        assert(count == 1 && root >= 101 && root <= 103);
+        assert(batch->size == sizeof(Input::InputValue) &&
+               std::string(batch->name) == "/input/grip/click");
+        ++reads;
+        Input::InputValue value{};
+        value.type = type;
+        value.visibility = visibility;
+        value.value[0] = invalid_boolean ? invalid_boolean : bool(down & (1ull << (root - 100)));
+        std::memcpy(batch->buffer, &value, sizeof(value));
+        batch->required = size;
+        batch->tag = tag;
+        batch->error = error;
+        return result;
+    }
+};
+void pointer_handoff() {
+    PointerSystem system;
+    Vr runtime;
+    runtime.system = &system;
+    runtime.controller_input = {GripInput::read, GripInput::container};
+    std::vector<bool> events;
+    Dashboard dashboard(nullptr, [&](const ct::ui::Event &event) {
+        if (const auto change = std::get_if<ct::ui::PointerEnabled>(&event))
+            events.push_back(change->enabled);
+    });
+    ControllerPointer pointer(runtime, dashboard);
+    pointer.input_time = 100;
+    pointer.toggle(100, 0x80);
+    const auto poll = [&] { pointer.grips(runtime.controller_input.grips(system)); };
+    for (uint32_t device : {1u, 3u}) {
+        pointer.set_enabled(true);
+        events.clear();
+        poll();
+        assert(GripInput::reads && pointer.grip_known == ((1ull << 1) | (1ull << 3)));
+        GripInput::down = 1ull << device;
+        poll();
+        poll();
+        assert(!pointer.enabled && !dashboard.input_enabled && events == std::vector<bool>{false});
+        pointer.buttons = 0x80;
+        pointer.input_time += .01;
+        assert(pointer.toggle(pointer.input_time, 0x80));
+        assert(events == (std::vector<bool>{false, true}));
+        poll();
+        poll();
+        assert(pointer.enabled);
+        GripInput::down = 0;
+        poll();
+        assert(pointer.enabled);
+        pointer.buttons = 0;
+        pointer.input_time += .01;
+        pointer.toggle(pointer.input_time, 0x80);
+    }
+    const auto rejected = [&] {
+        GripInput::down = 1ull << 1;
+        poll();
+        assert(pointer.enabled && pointer.grip_known == 0);
+        GripInput::down = 0;
+    };
+    for (auto field :
+         {&GripInput::tag, &GripInput::size, &GripInput::type, &GripInput::visibility}) {
+        const auto saved = *field;
+        *field = saved + 1;
+        rejected();
+        *field = saved;
+    }
+    GripInput::invalid_boolean = 2;
+    rejected();
+    GripInput::invalid_boolean = 0;
+    GripInput::result = 1;
+    rejected();
+    GripInput::result = 0;
+    GripInput::error = 1;
+    rejected();
+    GripInput::error = 0;
+    system.type = "";
+    rejected();
+    system.type = "frame_controller";
+    system.error = vr::TrackedProp_UnknownProperty;
+    rejected();
+    system.error = vr::TrackedProp_Success;
+    system.device_class = vr::TrackedDeviceClass_HMD;
+    rejected();
+    system.device_class = vr::TrackedDeviceClass_Controller;
+    system.connected = false;
+    rejected();
+    system.connected = true;
+    GripInput::down = 1ull << 1;
+    poll();
+    assert(pointer.enabled);
+    GripInput::down = 0;
+    poll();
+    GripInput::down = 1ull << 1;
+    poll();
+    assert(!pointer.enabled);
+}
+
 } // namespace
 int main() {
+    struct FontCleanup {
+        ~FontCleanup() {
+            ButtonGlyphs::instance().cache.clear();
+            cairo_debug_reset_static_data();
+            FcFini();
+        }
+    } fonts;
     try {
+        pointer_handoff();
         Dashboard dashboard(nullptr, discard);
         if (!dashboard.hit(320, 190) || std::string(dashboard.hit(320, 190)) != "toggle" ||
             dashboard.hit(20, 20) || dashboard.hit(270, 190))

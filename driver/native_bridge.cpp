@@ -238,6 +238,7 @@ class NativeBridge final : public vr::IServerTrackedDeviceProvider {
         ct::TrackedInputState controls;
         controls.time = app_input.time;
         controls.enabled = bool(app_input.flags & 1u);
+        controls.activate = !(app_input.flags & 4u);
         controls.trigger = app_input.trigger;
         controls.grip = app_input.grip;
         controls.stick_x = app_input.stick_x;

@@ -4,6 +4,8 @@ struct ControllerPointer {
     Vr &vr;
     Dashboard &dashboard;
     double input_time = 0, processed_time = 0, keyboard_time = 0;
+    double grip_time = 0;
+    uint64_t grip_known = 0, grip_down = 0;
     uint32_t buttons = 0, previous_binding = 0;
     float triggers[2]{}, left[3]{}, right[3]{}, stick[2]{}, left_stick[2]{};
     bool enabled = false, binding_down = false, keyboard_typing = false;
@@ -41,11 +43,20 @@ struct ControllerPointer {
         return true;
     }
     void set_enabled(bool value) {
-        if (enabled != value)
+        if (enabled != value) {
+            grip_known = grip_down = 0;
             dashboard.emit(ct::ui::PointerEnabled{value});
+        }
         enabled = value;
         dashboard.dirty |= dashboard.input_enabled != value;
         dashboard.input_enabled = value;
+    }
+    void grips(const ct::steamvr::GripState &state) {
+        const auto pressed = state.down & state.valid & grip_known & ~grip_down;
+        grip_known = state.valid;
+        grip_down = state.down & state.valid;
+        if (enabled && pressed)
+            set_enabled(false);
     }
     bool toggle(double now, uint32_t binding) {
         if (now - input_time > .1 || now - input_time < -.02) {
@@ -108,6 +119,10 @@ struct ControllerPointer {
             set_enabled(false);
         else
             toggle(now, dashboard.pointer_buttons);
+        if (enabled && now - grip_time >= .02) {
+            grip_time = now;
+            grips(vr.controller_input.grips(*vr.system));
+        }
         keyboard_state(head, now);
         show_input_state(enabled ? (keyboard_typing ? "Typing with both pads" : "Aim or swipe")
                                  : "Off");

@@ -67,6 +67,10 @@ class TrackedInputProfileTest(unittest.TestCase):
             for value in source["inputs"].values()
         ]
         self.assertEqual(outputs, ["/actions/lasermouse_secondary/in/switchlaserhand"])
+        self.assertEqual(
+            [source["path"] for source in groups["/actions/lasermouse_secondary"]["sources"]],
+            ["/user/hand/right/input/activate"],
+        )
 
     def test_existing_pad_trigger_clicks_and_native_scroll_are_preserved(self):
         directory = ROOT / "driver/resources/input"
@@ -92,9 +96,6 @@ class TrackedInputProfileTest(unittest.TestCase):
             <= paths("/actions/lasermouse", "rightclick")
         )
         self.assertIn(prefix + "cursorpad", paths("/actions/lasermouse", "LockMousePosition"))
-        self.assertIn(
-            prefix + "cursorpad", paths("/actions/lasermouse_secondary", "switchlaserhand")
-        )
         for mode in ("smooth", "discrete"):
             self.assertEqual(
                 paths("/actions/scroll_" + mode, "scroll"),

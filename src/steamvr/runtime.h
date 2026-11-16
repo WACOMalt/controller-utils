@@ -25,6 +25,9 @@ class RuntimeView {
     virtual std::vector<RuntimeDevice> devices() = 0;
     virtual std::string serial(uint32_t index) = 0;
     virtual std::optional<RigidPose> head_pose(int origin = 1) = 0;
+    virtual std::optional<unsigned> primary_dashboard_device() {
+        return std::nullopt;
+    }
     virtual QueueContext &queues() = 0;
 };
 class Runtime final : public RuntimeView {
@@ -57,6 +60,7 @@ class Runtime final : public RuntimeView {
     std::vector<Device> devices() override;
     std::string serial(uint32_t index) override;
     std::optional<RigidPose> head_pose(int origin = 1) override;
+    std::optional<unsigned> primary_dashboard_device() override;
     QueueContext &queues() override;
     uint64_t path_handle(const char *name);
     void close();

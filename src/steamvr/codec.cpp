@@ -118,7 +118,7 @@ wire::Command bridge_input(double session_start, double timestamp,
         throw std::invalid_argument("invalid native input state");
     wire::AppInput input{};
     input.id = wire::ControllerId;
-    input.flags = unsigned(enabled) | (pose ? 2u : 0u);
+    input.flags = unsigned(enabled) | (pose ? 2u : 0u) | (enabled && !controls.activate ? 4u : 0u);
     input.session_start = session_start;
     input.time = timestamp;
     input.pose_time = pose_time;

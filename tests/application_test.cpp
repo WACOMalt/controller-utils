@@ -113,6 +113,36 @@ int main() {
     }
     {
         app_replay::Host host;
+        auto current = j::parse("{}");
+        host.current = current.get();
+        ct::Application app(
+            host, {}, std::nullopt, true, [&] { return host.now; },
+            [&] { return host.now + 1000; });
+        for (bool enabled : {true, false, true}) {
+            current =
+                j::parse(std::string("{\"events\":[{\"op\":\"pointer_enabled\",\"enabled\":") +
+                         (enabled ? "true" : "false") + "}]}");
+            host.current = current.get();
+            host.now += .01;
+            ct::ControllerInput input;
+            input.received = host.now;
+            app.step(true, true, {input});
+            assert(count(host, "track") == 1 && count(host, "close") == 0);
+            bool observed = false;
+            for (size_t i = j::array_size(host.trace.get()); i > 0; --i) {
+                auto row = j::item(host.trace.get(), i - 1);
+                if (j::string(j::item(row, 1)) != "controls")
+                    continue;
+                assert(j::boolean(j::item(j::item(row, 2), 1)) == enabled);
+                observed = true;
+                break;
+            }
+            assert(observed);
+        }
+        app.close();
+    }
+    {
+        app_replay::Host host;
         host.recovery_mode = true;
         auto current = j::parse(
             R"({"events":[{"op":"action","action":"acquire"}],"fail":{"retry_recovery":{"kind":"runtime","message":"Restart failed"}}})");

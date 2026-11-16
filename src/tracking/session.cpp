@@ -128,6 +128,9 @@ std::optional<unsigned> TrackingSession::pointer_device(const std::string &seria
         return std::nullopt;
     return matches[0];
 }
+bool TrackingSession::pointer_selected(unsigned device) {
+    return runtime_.primary_dashboard_device() == device;
+}
 void TrackingSession::controls(const std::optional<ControllerInput> &input, bool enabled,
                                bool typing) {
     if (closed_)
@@ -327,8 +330,9 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
         control_received - *input_->state.received <= .15 && now - last_controls_ >= .01) {
         const auto body =
             initial.ready && tracker_->palm_aligned ? tracker_->input_pose(now) : std::nullopt;
-        if (native_->controls(now, body, input_->state.input.value_or(InputControls{}),
-                              owned && bool(body))) {
+        auto controls = input_->state.input.value_or(InputControls{});
+        controls.activate = !input_->state.activation_confirmed;
+        if (native_->controls(now, body, controls, owned && bool(body))) {
             input_->state.native_active = owned && bool(body);
             last_controls_ = now;
         }

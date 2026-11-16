@@ -147,6 +147,8 @@ void NativeApplicationHost::shortcut(const std::string &action) {
         shortcuts().send_action(ShortcutAction::Recenter);
     else if (action == "passthrough")
         shortcuts().send_action(ShortcutAction::Passthrough);
+    else if (action == "screenshot")
+        shortcuts().send_action(ShortcutAction::Screenshot);
     else
         throw std::invalid_argument("unsupported Frame shortcut");
 }

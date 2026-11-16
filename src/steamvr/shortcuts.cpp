@@ -173,29 +173,36 @@ bool OpenVrShortcutBackend::roomview_enabled() {
     return read_roomview_state(
         steamvr::Module::loaded(table, steamvr::compatibility::VrClient.path), chaperone);
 }
-void OpenVrShortcutBackend::prepare_progress() {
+void OpenVrShortcutBackend::prepare_events() {
     if (client_)
         return;
     void *client = nullptr;
     try {
         client = runtime_.interface("IVRClientInternal_XXX");
     } catch (const std::exception &) {
-        throw std::runtime_error("SteamVR shortcut animations unavailable");
+        throw std::runtime_error("SteamVR shortcut events unavailable");
     }
     void *table_address = nullptr;
     iovec local{&table_address, sizeof(table_address)}, remote{client, sizeof(table_address)};
     if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != sizeof(table_address))
-        throw std::runtime_error("SteamVR shortcut animation object unavailable");
+        throw std::runtime_error("SteamVR shortcut event object unavailable");
     const auto table = static_cast<const uintptr_t *>(table_address);
     try {
         const auto module = steamvr::Module::loaded(table, steamvr::compatibility::VrClient.path);
         if (!validate_progress_table(
                 module, table, 180,
                 "c166aa2b8ac8ab97ea0593ef162c3c967b85779c2ed209d2a8bedaca48dd55a0"))
-            throw std::runtime_error("invalid animation method");
+            throw std::runtime_error("invalid event method");
     } catch (const std::runtime_error &) {
-        throw std::runtime_error("SteamVR shortcut animation interface changed");
+        throw std::runtime_error("SteamVR shortcut event interface changed");
     }
+    post_ = reinterpret_cast<decltype(post_)>(table[24]);
+    client_ = client;
+}
+void OpenVrShortcutBackend::prepare_progress() {
+    if (progress_paths_[0])
+        return;
+    prepare_events();
     const std::array<const char *, 4> names{"/user/head", "/input/system",
                                             "/actions/quickrecenter/in/recenter",
                                             "/actions/controllerutils/in/passthrough"};
@@ -203,13 +210,10 @@ void OpenVrShortcutBackend::prepare_progress() {
     for (size_t i = 0; i < names.size(); ++i)
         handles[i] = runtime_.path_handle(names[i]);
     progress_paths_ = handles;
-    post_ = reinterpret_cast<decltype(post_)>(table[24]);
-    client_ = client;
 }
 void OpenVrShortcutBackend::post_progress(const ShortcutProgress &event) {
-    if (!client_ || !post_)
+    if (!progress_paths_[0])
         throw std::logic_error("shortcut progress is not prepared");
-    static_assert(sizeof(vr::VREvent_t) == 60 && offsetof(vr::VREvent_t, data) == 12);
     vr::VREvent_t packet{};
     packet.eventType = 1705;
     packet.data.progressUpdate.pathDevice = progress_paths_[0];
@@ -217,7 +221,12 @@ void OpenVrShortcutBackend::post_progress(const ShortcutProgress &event) {
     packet.data.progressUpdate.pathProgressAction =
         progress_paths_[event.action == ShortcutAction::Recenter ? 2 : 3];
     packet.data.progressUpdate.fProgress = float(event.amount);
-    post_(client_, &packet, 0);
+    post_event(packet);
+}
+void OpenVrShortcutBackend::post_event(const vr::VREvent_t &event) {
+    static_assert(sizeof(vr::VREvent_t) == 60 && offsetof(vr::VREvent_t, data) == 12);
+    prepare_events();
+    post_(client_, &event, 0);
 }
 NativeShortcuts::NativeShortcuts(ShortcutBackend &backend, std::function<double()> monotonic,
                                  std::string group)
@@ -236,6 +245,13 @@ NativeShortcuts::~NativeShortcuts() {
 void NativeShortcuts::send_action(ShortcutAction action) {
     if (!handle_)
         throw std::logic_error("shortcut mailbox is closed");
+    if (action == ShortcutAction::Screenshot) {
+        vr::VREvent_t event{};
+        event.eventType = vr::VREvent_ScreenshotTriggered;
+        event.trackedDeviceIndex = vr::k_unTrackedDeviceIndexInvalid;
+        backend_.post_event(event);
+        return;
+    }
     std::string message;
     if (action == ShortcutAction::Passthrough)
         message = std::string(R"({"type":"set_camera_roomview_enabled","enabled":)") +

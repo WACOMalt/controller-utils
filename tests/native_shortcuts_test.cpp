@@ -2,6 +2,7 @@
 #include "steamvr/module.h"
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -42,6 +43,14 @@ class Backend final : public ct::ShortcutBackend {
             std::to_string(event.amount));
         if (fail_progress)
             throw std::runtime_error("progress failed");
+    }
+    void post_event(const vr::VREvent_t &event) override {
+        assert(event.eventType == vr::VREvent_ScreenshotTriggered);
+        assert(event.trackedDeviceIndex == vr::k_unTrackedDeviceIndexInvalid);
+        assert(event.eventAgeSeconds == 0);
+        const vr::VREvent_Data_t empty{};
+        assert(!std::memcmp(&event.data, &empty, sizeof(empty)));
+        events.push_back("screenshot");
     }
 };
 template <class Function> void rejects(Function function, const std::string &expected) {
@@ -174,6 +183,8 @@ int main() {
     assert(backend.events[1] == R"({"type":"seated_and_standing_position_reset"})");
     assert(backend.events[2] == R"({"type":"set_camera_roomview_enabled","enabled":true})");
     assert(backend.events[3] == R"({"type":"set_camera_roomview_enabled","enabled":false})");
+    shortcuts.send_action(Action::Screenshot);
+    assert(backend.events.back() == "screenshot" && !backend.prepared);
     shortcuts.progress(std::nullopt);
     assert(!backend.prepared);
     shortcuts.progress(Action::Recenter, .5);
@@ -194,12 +205,14 @@ int main() {
         rejects([&] { shortcuts.progress(Action::Recenter, invalid); },
                 "invalid native shortcut progress");
     rejects([&] { shortcuts.progress(std::nullopt, .1); }, "invalid native shortcut progress");
+    rejects([&] { shortcuts.progress(Action::Screenshot); }, "invalid native shortcut progress");
     shortcuts.close();
     assert(backend.events[backend.events.size() - 2] == "passthrough:0.000000");
     assert(backend.events.back() == "close" && backend.closed == 1 && backend.prepared == 1);
     shortcuts.close();
     assert(backend.closed == 1);
     rejects([&] { shortcuts.send_action(Action::Recenter); }, "shortcut mailbox is closed");
+    rejects([&] { shortcuts.send_action(Action::Screenshot); }, "shortcut mailbox is closed");
     {
         Backend failed;
         failed.fail_prepare = true;
@@ -209,6 +222,8 @@ int main() {
         assert(failed.events.back() == R"({"type":"seated_and_standing_position_reset"})");
         owner.send_action(Action::Passthrough);
         assert(failed.events.back() == R"({"type":"set_camera_roomview_enabled","enabled":true})");
+        owner.send_action(Action::Screenshot);
+        assert(failed.events.back() == "screenshot");
     }
     {
         Backend failed;

@@ -39,6 +39,7 @@ std::vector<std::string> SteamShortcuts::update(uint32_t buttons, double now, bo
     const bool current_down = buttons & 0x10000;
     const bool reset = !last_sample || now - *last_sample > .25;
     const bool chord = (buttons & 0x10004) == 0x10004;
+    const bool screenshot = (buttons & 0x10200) == 0x10200;
     std::vector<std::string> actions;
     hold_enabled = enabled;
     if (!reset && keyboard && last_tap && now - *last_tap > .5 && !down) {
@@ -48,6 +49,9 @@ std::vector<std::string> SteamShortcuts::update(uint32_t buttons, double now, bo
     if (keyboard && chord && !keyboard_chord && !reset)
         actions.emplace_back("keyboard");
     keyboard_chord = chord;
+    if (enabled && screenshot && !screenshot_chord && !reset)
+        actions.emplace_back("screenshot");
+    screenshot_chord = screenshot;
     if ((!enabled && !keyboard) || reset) {
         down = current_down;
         started.reset();

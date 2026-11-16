@@ -53,6 +53,7 @@ For an existing installation, use updates or uninstall before installing again.
 | View + Menu, hold 1 second then release | Realign heading |
 | View + Menu, hold 5 seconds | Restart tracking |
 | Steam + X | Open the keyboard |
+| Steam + R1 | Take a native screenshot |
 | Steam, hold 1 second then release | Recenter the view |
 | Steam, double press | Toggle passthrough |
 

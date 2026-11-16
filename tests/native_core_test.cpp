@@ -60,6 +60,37 @@ int main() {
         keys.update(0x10000, 14.5, false, true);
         assert(keys.update(0, 14.6, false, true) == std::vector<std::string>{"dashboard"});
     }
+    for (uint32_t first : {0x10000u, 0x200u, 0x10200u}) {
+        SteamShortcuts keys;
+        assert(keys.update(0, 10, true, true).empty());
+        const auto initial = keys.update(first, 10.01, true, true);
+        assert(initial == (first == 0x10200 ? std::vector<std::string>{"screenshot"}
+                                            : std::vector<std::string>{}));
+        const auto chord = keys.update(0x10200, 10.02, true, true);
+        assert(chord == (first == 0x10200 ? std::vector<std::string>{}
+                                          : std::vector<std::string>{"screenshot"}));
+        for (double now = 10.1; now < 11.5; now += .1) {
+            assert(keys.update(0x10200, now, true, true).empty());
+            assert(!keys.progress(now));
+        }
+        assert(keys.update(0x10000, 11.5, true, true).empty());
+        assert(keys.update(0x10200, 11.51, true, true) == std::vector<std::string>{"screenshot"});
+        assert(keys.update(0, 11.6, true, true).empty());
+        for (double now = 11.7; now < 12.3; now += .1)
+            assert(keys.update(0, now, true, true).empty());
+    }
+    for (bool keyboard : {false, true}) {
+        SteamShortcuts keys;
+        assert(keys.update(0x10200, 10, true, keyboard).empty());
+        assert(keys.update(0, 10.1, true, keyboard).empty());
+        assert(keys.update(0x10200, 11, true, keyboard).empty());
+        assert(keys.update(0, 11.1, false, keyboard).empty());
+        assert(keys.update(0x10200, 11.2, false, keyboard).empty());
+        assert(keys.update(0x10200, 11.3, true, keyboard).empty());
+        assert(keys.update(0x10000, 11.4, true, keyboard).empty());
+        assert(keys.update(0x10200, 11.5, true, keyboard) ==
+               std::vector<std::string>{"screenshot"});
+    }
     {
         helper::AcquisitionReader short_reader(
             [](uintptr_t, size_t size) { return helper::Bytes(size - 1); });

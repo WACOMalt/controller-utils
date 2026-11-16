@@ -53,7 +53,8 @@ class BindingCapture {
 
 class SteamShortcuts {
   public:
-    bool down = false, fired = false, keyboard_chord = false, second_tap = false;
+    bool down = false, fired = false, keyboard_chord = false, screenshot_chord = false,
+         second_tap = false;
     bool hold_enabled = false;
     std::optional<double> started, last_tap, last_sample;
     std::vector<std::string> update(uint32_t buttons, double now, bool enabled,

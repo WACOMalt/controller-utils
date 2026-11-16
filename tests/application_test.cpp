@@ -86,6 +86,31 @@ void event_boundary(const std::string &event) {
 }
 } // namespace
 int main() {
+    for (bool enabled : {false, true}) {
+        app_replay::Host host;
+        auto current = j::parse("{}");
+        host.current = current.get();
+        ct::Settings options;
+        options.steam_shortcuts = enabled;
+        ct::Application app(
+            host, options, std::nullopt, true, [&] { return host.now; },
+            [&] { return host.now + 1000; });
+        ct::ControllerInput input;
+        for (uint32_t buttons : {0u, 0x10000u, 0x10200u, 0x10200u, 0x10000u, 0u}) {
+            host.now += .01;
+            input.received = host.now;
+            input.report.buttons = buttons;
+            app.step(true, true, {input});
+        }
+        assert(count(host, "shortcut") == unsigned(enabled));
+        for (size_t i = 0; i < j::array_size(host.trace.get()); ++i) {
+            const auto row = j::item(host.trace.get(), i);
+            if (j::string(j::item(row, 1)) == "shortcut")
+                assert(j::string(j::item(row, 2)) == "screenshot");
+        }
+        assert(count(host, "keyboard_request") == 0);
+        app.close();
+    }
     {
         app_replay::Host host;
         host.recovery_mode = true;

@@ -117,6 +117,27 @@ if ! "$worker"; then
     printf 'Setup is still running. Log: %s\n' "$base/app-data/setup.log"
     exit 0
 fi
+load_state=$(systemctl --user show steam.service -p LoadState --value) || fail 'Cannot inspect the Steam service. Setup was stopped.'
+[ "$load_state" != masked ] || fail 'Steam is masked. Unmask it before running setup.'
+restart_session() {
+    if ! systemctl --user start steamvr.service; then
+        attempts=0
+        while ! systemctl --user is-active --quiet steamvr.service; do
+            state=$(systemctl --user show steamvr.service -p ActiveState --value) || state=failed
+            if [ "$state" = failed ] || [ "$attempts" -ge 15 ]; then
+                printf '%s\n' 'SteamVR did not finish restarting. Restart Frame if VR does not return.' >&2
+                return
+            fi
+            attempts=$((attempts + 1))
+            sleep 1
+        done
+    fi
+    if ! systemctl --user reset-failed steam.service ||
+       { ! systemctl --user start steam.service && ! systemctl --user is-active --quiet steam.service; }
+    then
+        printf '%s\n' 'Steam did not finish restarting. Restart Frame if its menu does not return.' >&2
+    fi
+}
 if "$remove"; then
     sudo -v || fail 'Authentication is required to uninstall Controller Utils.'
     systemctl --user is-active --quiet steamvr.service || fail 'Start SteamVR before uninstalling so its app registration can be removed.'
@@ -140,10 +161,8 @@ if "$remove"; then
         status=$?
         trap - EXIT
         if "$locked"; then flock -u 9 || status=1; fi
-        if "$masked"; then systemctl --user unmask --runtime steamvr.service || status=1; fi
-        if ! systemctl --user start steamvr.service && ! systemctl --user is-active --quiet steamvr.service; then
-            printf '%s\n' 'SteamVR did not finish restarting. Restart Frame if VR does not return.' >&2
-        fi
+        if "$masked"; then systemctl --user unmask --runtime steamvr.service steam.service || status=1; fi
+        restart_session
         if ! "$complete"; then
             "$base/app/controller-utils" --prepare-registration || status=1
         fi
@@ -152,7 +171,8 @@ if "$remove"; then
     trap cleanup EXIT
     trap 'exit 1' HUP INT TERM
     masked=true
-    systemctl --user mask --runtime steamvr.service
+    systemctl --user mask --runtime steamvr.service steam.service
+    systemctl --user stop steam.service
     systemctl --user stop steamvr.service
     exec 9<> "$base/app-data/app.lock"
     flock -n 9 || fail 'Close Controller Utils before uninstalling.'
@@ -218,12 +238,8 @@ cleanup() {
     else
         rm -rf -- "$work"
     fi
-    if "$masked"; then systemctl --user unmask --runtime steamvr.service || status=1; fi
-    if "$resume" && ! systemctl --user start steamvr.service &&
-       ! systemctl --user is-active --quiet steamvr.service
-    then
-        printf '%s\n' 'SteamVR did not finish restarting. Restart Frame if VR does not return.' >&2
-    fi
+    if "$masked"; then systemctl --user unmask --runtime steamvr.service steam.service || status=1; fi
+    if "$resume"; then restart_session; fi
     exit "$status"
 }
 trap cleanup EXIT
@@ -238,7 +254,8 @@ fi
 load_state=$(systemctl --user show steamvr.service -p LoadState --value) || fail 'Cannot inspect the SteamVR service. Installation was stopped.'
 [ "$load_state" != masked ] || fail 'SteamVR is masked. Unmask it before installing.'
 masked=true
-systemctl --user mask --runtime steamvr.service
+systemctl --user mask --runtime steamvr.service steam.service
+systemctl --user stop steam.service
 systemctl --user stop steamvr.service
 exec 9<> "$base/app-data/app.lock"
 flock -n 9 || fail 'Close Controller Utils before installing.'

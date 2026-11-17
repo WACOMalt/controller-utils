@@ -284,3 +284,31 @@ class BootstrapTest(unittest.TestCase):
                 bootstrap.main()
             self.assertEqual(exited.exception.code, 128 + signum)
             self.assertFalse(verify.call_args.args[1].parent.exists())
+
+    def test_uninstall_runs_the_verified_installer_without_a_feed_argument(self):
+        installer = self.root / "verified-installer"
+        with (
+            patch("sys.argv", ["bootstrap.py", "--uninstall", str(self.feed)]),
+            patch.object(bootstrap, "verify_package", return_value=installer) as verify,
+            patch.object(
+                bootstrap.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+            ) as run,
+        ):
+            self.assertEqual(bootstrap.main(), 0)
+        self.assertEqual(verify.call_args.args[0], self.feed)
+        self.assertEqual(
+            run.call_args.args[0], ["/bin/sh", str(installer / "install.sh"), "--uninstall"]
+        )
+
+    def test_cleanup_and_uninstall_cannot_be_combined(self):
+        with (
+            patch("sys.argv", ["bootstrap.py", "--cleanup", "--uninstall"]),
+            patch.object(bootstrap, "download_release") as download,
+            patch.object(bootstrap, "verify_package") as verify,
+            patch("sys.stderr", new_callable=io.StringIO),
+            self.assertRaises(SystemExit) as exited,
+        ):
+            bootstrap.main()
+        self.assertEqual(exited.exception.code, 2)
+        download.assert_not_called()
+        verify.assert_not_called()

@@ -95,12 +95,14 @@ if ! "$worker"; then
             exec 8<>"$job/../setup.lock"
             if ! flock -n 8; then
                 printf "%s\n" "Another Controller Utils setup is running." >"$job/output.log"
-                printf "1\n" >"$job/status"
+                printf "1\n" >"$job/status.next"
+                mv -- "$job/status.next" "$job/status"
                 exit 1
             fi
             /bin/sh "$@" 2>&1 | tee "$job/output.log" "$job/../setup.log"
             status=${PIPESTATUS[0]}
-            printf "%s\n" "$status" >"$job/status"
+            printf "%s\n" "$status" >"$job/status.next"
+            mv -- "$job/status.next" "$job/status"
             rm -rf -- "$job/source" "$job/feed"
             exit "$status"
         ' setup "$job" "$@" || fail "Could not start setup. Check $job/output.log."

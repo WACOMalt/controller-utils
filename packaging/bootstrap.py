@@ -199,7 +199,9 @@ def exit_on_signal(signum, _frame):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cleanup", action="store_true")
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--cleanup", action="store_true")
+    actions.add_argument("--uninstall", action="store_true")
     parser.add_argument("release_directory", type=Path, nargs="?")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="controller-utils-bootstrap-") as temporary:
@@ -210,11 +212,19 @@ def main():
         )
         work = Path(temporary) / "verified"
         installer = verify_package(feed, work)
-        print("Release verified. Starting installation...", flush=True)
+        print(
+            "Release verified. Starting removal..."
+            if args.uninstall
+            else "Release verified. Starting installation...",
+            flush=True,
+        )
         command = ["/bin/sh", str(installer / "install.sh")]
-        if args.cleanup:
-            command.append("--cleanup")
-        command.append(str(work))
+        if args.uninstall:
+            command.append("--uninstall")
+        else:
+            if args.cleanup:
+                command.append("--cleanup")
+            command.append(str(work))
         return subprocess.run(command, check=False).returncode
 
 

@@ -75,6 +75,12 @@ To uninstall, run:
 ~/.local/share/controller-utils/app/uninstall.sh
 ```
 
+If an older uninstall stopped partway through, run the latest signed uninstaller:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packaging/bootstrap.py | python3 - --uninstall
+```
+
 Removal asks for administrator access. Updates and removal keep settings and
 per-controller calibration in `~/.local/share/controller-utils/app-data`.
 

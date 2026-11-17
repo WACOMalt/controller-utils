@@ -210,8 +210,8 @@ def main():
         if args.cleanup:
             command.append("--cleanup")
         command.append(str(work))
-        subprocess.run(command, check=True)
+        return subprocess.run(command, check=False).returncode
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

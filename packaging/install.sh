@@ -27,6 +27,10 @@ done
 [ -x /opt/steamvr/bin/linuxarm64/vrpathreg ] || fail 'The SteamVR driver registration tool is missing.'
 service=$HOME/.local/share/systemd/user/controller-utils-update.service
 [ ! -e "$service" ] && [ ! -L "$service" ] || fail 'An existing update service needs review before installation.'
+XDG_RUNTIME_DIR=/run/user/$(id -u)
+export XDG_RUNTIME_DIR
+unset DBUS_SESSION_BUS_ADDRESS
+systemctl --user show-environment >/dev/null 2>&1 || fail 'Cannot connect to the SteamOS user session. Open Konsole on Frame and try again.'
 if [ -e "$legacy/app-data" ] || [ -L "$legacy/app-data" ]
 then
     [ -d "$legacy" ] && [ ! -L "$legacy" ] && [ -d "$legacy/app-data" ] && [ ! -L "$legacy/app-data" ] || fail 'The previous settings directory needs review before installation.'
@@ -91,7 +95,8 @@ if systemctl --user is-active --quiet steamvr.service
 then
     resume=true
 fi
-[ "$(systemctl --user show steamvr.service -p LoadState --value)" != masked ] || fail 'SteamVR is masked. Unmask it before installing.'
+load_state=$(systemctl --user show steamvr.service -p LoadState --value) || fail 'Cannot inspect the SteamVR service. Installation was stopped.'
+[ "$load_state" != masked ] || fail 'SteamVR is masked. Unmask it before installing.'
 masked=true
 systemctl --user mask --runtime steamvr.service
 systemctl --user stop steamvr.service

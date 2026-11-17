@@ -11,9 +11,14 @@ base=$HOME/.local/share/controller-utils
 [ -d "$base/app" ] && [ ! -L "$base/app" ] || fail 'Controller Utils is not installed.'
 [ "$(readlink "$base/native-driver")" = app/native-driver ] || fail 'The installed driver path needs review before removal.'
 [ -x /opt/steamvr/bin/linuxarm64/vrpathreg ] || fail 'The SteamVR driver registration tool is missing.'
+XDG_RUNTIME_DIR=/run/user/$(id -u)
+export XDG_RUNTIME_DIR
+unset DBUS_SESSION_BUS_ADDRESS
+systemctl --user show-environment >/dev/null 2>&1 || fail 'Cannot connect to the SteamOS user session. Open Konsole on Frame and try again.'
 sudo -v || fail 'Authentication is required to uninstall Controller Utils.'
 systemctl --user is-active --quiet steamvr.service || fail 'Start SteamVR before uninstalling so its app registration can be removed.'
-[ "$(systemctl --user show steamvr.service -p LoadState --value)" != masked ] || fail 'SteamVR is masked. Unmask it before uninstalling.'
+load_state=$(systemctl --user show steamvr.service -p LoadState --value) || fail 'Cannot inspect the SteamVR service. Removal was stopped.'
+[ "$load_state" != masked ] || fail 'SteamVR is masked. Unmask it before uninstalling.'
 processes=$(pgrep -u 1000 -f '^/home/steamos/.local/share/controller-utils/app/controller-utils( |$)' || true)
 if [ -n "$processes" ]
 then

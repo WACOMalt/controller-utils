@@ -245,16 +245,24 @@ class BootstrapTest(unittest.TestCase):
         self.assertEqual(command[command.index("--max-filesize") + 1], "64")
         self.assertTrue(run.call_args.kwargs["check"])
 
-    def test_no_arguments_downloads_and_runs_the_verified_installer(self):
+    def test_downloads_and_propagates_verified_installer_exit_status(self):
         installer = self.root / "verified-installer"
-        with (
-            patch("sys.argv", ["bootstrap.py"]),
-            patch.object(bootstrap, "download_release", return_value=self.feed) as fetch,
-            patch.object(bootstrap, "verify_package", return_value=installer) as verify,
-            patch.object(bootstrap.subprocess, "run") as run,
-        ):
-            bootstrap.main()
-        fetch.assert_called_once()
-        self.assertEqual(verify.call_args.args[0], self.feed)
-        self.assertEqual(run.call_args.args[0][:2], ["/bin/sh", str(installer / "install.sh")])
-        self.assertTrue(run.call_args.kwargs["check"])
+        for status in (0, 1, 23):
+            with (
+                self.subTest(status=status),
+                patch("sys.argv", ["bootstrap.py"]),
+                patch.object(bootstrap, "download_release", return_value=self.feed) as fetch,
+                patch.object(bootstrap, "verify_package", return_value=installer) as verify,
+                patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], status),
+                ) as run,
+            ):
+                self.assertEqual(bootstrap.main(), status)
+                fetch.assert_called_once()
+                self.assertEqual(verify.call_args.args[0], self.feed)
+                self.assertEqual(
+                    run.call_args.args[0][:2], ["/bin/sh", str(installer / "install.sh")]
+                )
+                self.assertFalse(run.call_args.kwargs["check"])

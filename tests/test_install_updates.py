@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import pty
@@ -120,7 +121,7 @@ def sandbox(case, directory, parent_namespace):
     write(source / "controller-utils-launcher", "launcher fixture", 0o755)
     write(source / "latest.json", "metadata fixture")
     write(source / "latest.sig", "signature fixture")
-    write(source / "controller-utils-0.1.5-11-linuxarm64.tar.gz", "archive fixture")
+    write(source / "controller-utils-0.1.6-12-linuxarm64.tar.gz", "archive fixture")
     write(
         source / "controller-utils",
         '#!/bin/sh\nprintf \'%s %s\\n\' "$(id -u)" "$*" >> /home/steamos/registration.log\n',
@@ -333,8 +334,22 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         pid, terminal = pty.fork()
         if pid == 0:
             os.chown(os.ttyname(0), 1000, 1000)
+            os.environ["TERM"] = "xterm-256color"
             os.execv(user_command[0], [*user_command, *arguments])
         os.write(terminal, answer)
+        os.set_blocking(terminal, False)
+        output = bytearray()
+
+        def read_terminal():
+            try:
+                output.extend(os.read(terminal, 65536))
+            except BlockingIOError:
+                pass
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+            time.sleep(0.02)
+
         try:
             deadline = time.monotonic() + 8
             if answer != b"y\n":
@@ -343,12 +358,16 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
                     if exited is not None:
                         return subprocess.CompletedProcess(arguments, exited.si_status, "", "")
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("Setup did not cancel")
-                    time.sleep(0.02)
+                        raise RuntimeError(
+                            "Setup did not cancel:\n" + output.decode(errors="replace")
+                        )
+                    read_terminal()
             while not Path("/home/steamos/worker-ready").exists():
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("Setup did not reach SteamVR shutdown")
-                time.sleep(0.02)
+                    raise RuntimeError(
+                        "Setup did not reach SteamVR shutdown:\n" + output.decode(errors="replace")
+                    )
+                read_terminal()
             os.killpg(pid, signal.SIGHUP)
             write(Path("/home/steamos/continue-worker"), "desktop has closed")
             while True:
@@ -359,8 +378,11 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
                         arguments, status, "", (BASE / "app-data/setup.log").read_text()
                     )
                 if time.monotonic() >= deadline:
-                    raise RuntimeError("Setup did not finish after its terminal closed")
-                time.sleep(0.02)
+                    raise RuntimeError(
+                        "Setup did not finish after its terminal closed:\n"
+                        + output.decode(errors="replace")
+                    )
+                read_terminal()
         finally:
             os.close(terminal)
             try:

@@ -176,13 +176,30 @@ if [ -e /home/steamos/no-user-manager ]; then
 fi
 case "$*" in
     '--user show-environment') exit 0 ;;
-    '--user is-active --quiet steamvr.service') [ ! -e /home/steamos/steamvr.inactive ] ;;
+    '--user is-active --quiet steamvr.service')
+        if [ -e /home/steamos/steamvr.starting ]; then
+            rm /home/steamos/steamvr.starting
+            rm -f /home/steamos/steamvr.inactive
+            exit 1
+        fi
+        [ ! -e /home/steamos/steamvr.inactive ] ;;
+    '--user show steamvr.service -p ActiveState --value')
+        if [ -e /home/steamos/restart-failed ]; then printf '%s\\n' failed; else printf '%s\\n' activating; fi ;;
+    '--user is-active --quiet steam.service') [ ! -e /home/steamos/steam.inactive ] ;;
+    '--user show steam.service -p LoadState --value')
+        if [ -e /home/steamos/steam.masked ]; then printf '%s\\n' masked; else printf '%s\\n' loaded; fi ;;
     '--user show steamvr.service -p LoadState --value')
         [ ! -e /home/steamos/runtime-state-unavailable ] || exit 1
         if [ -e /home/steamos/steamvr.masked ]; then printf '%s\\n' masked; else printf '%s\\n' loaded; fi ;;
     '--user mask --runtime steamvr.service') touch /home/steamos/steamvr.masked ;;
+    '--user mask --runtime steamvr.service steam.service') touch /home/steamos/steamvr.masked /home/steamos/steam.masked ;;
+    '--user stop steam.service') touch /home/steamos/steam.inactive ;;
     '--user stop steamvr.service')
         [ -e /home/steamos/steamvr.masked ] || exit 1
+        if [ ! -e /home/steamos/steam.masked ]; then
+            touch /home/steamos/steam.early-start /home/steamos/steam.start-limit
+        fi
+        touch /home/steamos/steam.inactive
         [ -e /home/steamos/steamvr.inactive ] || touch /home/steamos/steamvr.inactive
         if [ -e /home/steamos/close-terminal ]; then
             printf '%s\\n' 'Waiting for terminal shutdown' >/dev/tty
@@ -190,10 +207,29 @@ case "$*" in
             while [ ! -e /home/steamos/continue-worker ]; do sleep 0.05; done
         fi ;;
     '--user unmask --runtime steamvr.service') rm /home/steamos/steamvr.masked ;;
+    '--user unmask --runtime steamvr.service steam.service') rm /home/steamos/steamvr.masked /home/steamos/steam.masked ;;
+    '--user reset-failed steam.service') rm -f /home/steamos/steam.start-limit ;;
+    '--user start steam.service')
+        [ ! -e /home/steamos/steamvr.inactive ] && [ ! -e /home/steamos/steam.masked ] &&
+            [ ! -e /home/steamos/steam.start-limit ] || exit 1
+        if [ -e /home/steamos/steam.restart-failed ]; then
+            printf '%s\\n' 'Job for steam.service failed.' >&2
+            exit 1
+        fi
+        rm -f /home/steamos/steam.inactive
+        if [ -e /home/steamos/steam.restart-canceled ]; then
+            printf '%s\\n' 'Job for steam.service canceled.' >&2
+            exit 1
+        fi ;;
     '--user start steamvr.service')
         [ ! -e /home/steamos/steamvr.masked ] || exit 1
         if [ -e /home/steamos/restart-failed ]; then
             printf '%s\\n' 'Job for steamvr.service failed.' >&2
+            exit 1
+        fi
+        if [ -e /home/steamos/restart-pending ]; then
+            touch /home/steamos/steamvr.starting
+            printf '%s\\n' 'Job for steamvr.service canceled.' >&2
             exit 1
         fi
         rm -f /home/steamos/steamvr.inactive
@@ -286,6 +322,8 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         write(Path("/home/steamos/restart-canceled"), "superseded start job")
     elif case == "restart-failed":
         write(Path("/home/steamos/restart-failed"), "failed start job")
+    elif case == "restart-pending":
+        write(Path("/home/steamos/restart-pending"), "replacement start job")
     if case == "service-link":
         SERVICE.rmdir()
         SERVICE.symlink_to(PRIVILEGED, target_is_directory=True)
@@ -310,6 +348,11 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         write(Path("/home/steamos/steamvr.masked"), "preexisting mask")
     elif case == "inactive-runtime":
         write(Path("/home/steamos/steamvr.inactive"), "inactive")
+    elif case == "steam-masked-runtime":
+        write(Path("/home/steamos/steam.masked"), "preexisting mask")
+    elif case in ("steam-start-limit", "steam-restart-failed", "steam-restart-canceled"):
+        name = case.removeprefix("steam-")
+        write(Path("/home/steamos/steam." + name), "Steam startup failure")
     elif case in ("no-user-manager", "runtime-state-unavailable"):
         write(Path("/home/steamos") / case, "unavailable")
     user_command = [
@@ -445,6 +488,7 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         "remove-failure",
         "legacy-data",
         "restart-canceled",
+        "restart-pending",
         "remove-restart-failed",
         "stale-session-environment",
         "remove-no-user-manager",
@@ -452,6 +496,9 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         "local-uninstall",
         "cancel-remove",
         "cancel-remove-default",
+        "steam-start-limit",
+        "steam-restart-failed",
+        "steam-restart-canceled",
     ):
         repeated = subprocess.run(command, capture_output=True, text=True).returncode
         write(BASE / "app-data/startup-recovery", "disabled recovery")
@@ -459,6 +506,8 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
             write(Path("/home/steamos/fail-uninstall"), "fail")
         elif case == "remove-restart-failed":
             write(Path("/home/steamos/restart-failed"), "failed start job")
+        elif case == "steam-start-limit":
+            write(Path("/home/steamos/steam.start-limit"), "Steam startup failure")
         elif case in ("remove-no-user-manager", "remove-runtime-state-unavailable"):
             write(Path("/home/steamos") / case.removeprefix("remove-"), "unavailable")
         if case in ("local-uninstall", "cancel-remove", "cancel-remove-default"):
@@ -548,6 +597,9 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
                 if Path("/home/steamos/systemctl.log").exists()
                 else [],
                 "steamvr_masked": Path("/home/steamos/steamvr.masked").exists(),
+                "steam_masked": Path("/home/steamos/steam.masked").exists(),
+                "steam_active": not Path("/home/steamos/steam.inactive").exists(),
+                "steam_early_start": Path("/home/steamos/steam.early-start").exists(),
                 "stale_update_state": (BASE / "app-data/updates/transaction.json").exists()
                 or (BASE / "app-data/updates/previous-app").exists(),
                 "cache_target": Path("/home/steamos/other-cache/sentinel").read_text()
@@ -634,9 +686,12 @@ class InstallUpdatesTest(unittest.TestCase):
             self.assertEqual(operation["euid"], 1000, operation)
         self.assertTrue(all(line.startswith("1000 ") for line in result["systemctl"]))
         self.assertFalse(result["steamvr_masked"])
-        self.assertEqual(result["systemctl"].count("1000 --user mask --runtime steamvr.service"), 2)
         self.assertEqual(
-            result["systemctl"].count("1000 --user unmask --runtime steamvr.service"), 2
+            result["systemctl"].count("1000 --user mask --runtime steamvr.service steam.service"), 2
+        )
+        self.assertEqual(
+            result["systemctl"].count("1000 --user unmask --runtime steamvr.service steam.service"),
+            2,
         )
 
     def test_stale_session_environment_is_resolved_for_install_and_removal(self):
@@ -725,7 +780,10 @@ class InstallUpdatesTest(unittest.TestCase):
                 self.assertEqual(result["registration"], ["1000 --prepare-registration"])
                 self.assertNotIn("0 --uninstall", result["native"])
                 self.assertEqual(
-                    result["systemctl"].count("1000 --user mask --runtime steamvr.service"), 1
+                    result["systemctl"].count(
+                        "1000 --user mask --runtime steamvr.service steam.service"
+                    ),
+                    1,
                 )
                 self.assertFalse(result["steamvr_masked"])
 
@@ -734,7 +792,9 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertNotEqual(result["status"], 0)
         self.assertIn("Cannot inspect the SteamVR service", result["stderr"])
         self.assertFalse(any(line.startswith("0 --install ") for line in result["native"]))
-        self.assertNotIn("1000 --user mask --runtime steamvr.service", result["systemctl"])
+        self.assertNotIn(
+            "1000 --user mask --runtime steamvr.service steam.service", result["systemctl"]
+        )
         self.assertEqual(result["installed"], "previous updater\n")
         self.assertFalse(result["app_exists"] or result["steamvr_masked"])
 
@@ -788,19 +848,72 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertTrue(result["app_exists"] and result["root_exists"])
         self.assertEqual(result["registration"][-1], "1000 --prepare-registration")
         self.assertFalse(result["steamvr_masked"])
-        self.assertEqual(result["systemctl"][-1], "1000 --user start steamvr.service")
+        self.assertEqual(result["systemctl"][-1], "1000 --user start steam.service")
 
-    def test_canceled_restart_does_not_fail_completed_install_or_removal(self):
-        result = self.check_case("restart-canceled")
+    def test_setup_restarts_steam_after_vr_and_clears_startup_limit(self):
+        for case in ("normal", "steam-start-limit"):
+            with self.subTest(case=case):
+                result = self.check_case(case)
+                self.assertEqual(result["status"], 0, result["stderr"])
+                self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
+                self.assertTrue(result["steam_active"])
+                self.assertFalse(result["steam_masked"] or result["steam_early_start"])
+                calls = result["systemctl"]
+                restart = "1000 --user start steam.service"
+                self.assertEqual(calls.count(restart), 2)
+                stops = [
+                    call
+                    for call in calls
+                    if call
+                    in ("1000 --user stop steam.service", "1000 --user stop steamvr.service")
+                ]
+                self.assertEqual(
+                    stops,
+                    ["1000 --user stop steam.service", "1000 --user stop steamvr.service"] * 2,
+                )
+                for index, call in enumerate(calls):
+                    if call == restart:
+                        self.assertEqual(calls[index - 1], "1000 --user reset-failed steam.service")
+                        self.assertEqual(calls[index - 2], "1000 --user start steamvr.service")
+
+    def test_steam_restart_failure_warns_without_undoing_setup(self):
+        result = self.check_case("steam-restart-failed")
         self.assertEqual(result["status"], 0, result["stderr"])
         self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
-        self.assertIn("Job for steamvr.service canceled.", result["stderr"])
-        self.assertIn("Job for steamvr.service canceled.", result["remove_stderr"])
+        for output in (result["stderr"], result["remove_stderr"]):
+            self.assertIn("Steam did not finish restarting", output)
+        self.assertFalse(result["steam_masked"] or result["steamvr_masked"])
+
+    def test_canceled_steam_start_checks_whether_steam_is_running(self):
+        result = self.check_case("steam-restart-canceled")
+        self.assertEqual(result["status"], 0, result["stderr"])
+        self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
+        self.assertTrue(result["steam_active"])
         self.assertNotIn("Restart Frame", result["stderr"] + result["remove_stderr"])
-        self.assertFalse(result["app_exists"] or result["root_exists"] or result["service_exists"])
+
+    def test_existing_steam_mask_is_preserved(self):
+        result = self.check_case("steam-masked-runtime")
+        self.assertNotEqual(result["status"], 0)
+        self.assertTrue(result["steam_masked"])
         self.assertFalse(result["steamvr_masked"])
-        self.assertEqual(result["settings"], "preserved settings")
-        self.assertEqual(result["calibration"], "preserved calibration")
+        self.assertFalse(any(line.startswith("0 --install ") for line in result["native"]))
+
+    def test_canceled_restart_does_not_fail_completed_install_or_removal(self):
+        for case in ("restart-canceled", "restart-pending"):
+            with self.subTest(case=case):
+                result = self.check_case(case)
+                self.assertEqual(result["status"], 0, result["stderr"])
+                self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
+                self.assertIn("Job for steamvr.service canceled.", result["stderr"])
+                self.assertIn("Job for steamvr.service canceled.", result["remove_stderr"])
+                self.assertNotIn("Restart Frame", result["stderr"] + result["remove_stderr"])
+                self.assertFalse(
+                    result["app_exists"] or result["root_exists"] or result["service_exists"]
+                )
+                self.assertFalse(result["steamvr_masked"] or result["steam_masked"])
+                self.assertTrue(result["steam_active"])
+                self.assertEqual(result["settings"], "preserved settings")
+                self.assertEqual(result["calibration"], "preserved calibration")
 
     def test_failed_restart_warns_without_failing_completed_install_or_removal(self):
         for case in ("restart-failed", "remove-restart-failed"):
@@ -831,7 +944,9 @@ class InstallUpdatesTest(unittest.TestCase):
         result = self.check_case("masked-runtime")
         self.assertNotEqual(result["status"], 0)
         self.assertTrue(result["steamvr_masked"])
-        self.assertNotIn("1000 --user unmask --runtime steamvr.service", result["systemctl"])
+        self.assertNotIn(
+            "1000 --user unmask --runtime steamvr.service steam.service", result["systemctl"]
+        )
         self.assertFalse(any(line.startswith("0 --install ") for line in result["native"]))
 
     def test_inactive_steamvr_is_not_started_after_installation(self):
@@ -839,6 +954,7 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertEqual(result["status"], 0, result["stderr"])
         self.assertFalse(result["steamvr_masked"])
         self.assertNotIn("1000 --user start steamvr.service", result["systemctl"])
+        self.assertNotIn("1000 --user start steam.service", result["systemctl"])
 
     def test_failed_registration_cleans_user_installation_and_keeps_settings(self):
         result = self.check_case("registration-failure")

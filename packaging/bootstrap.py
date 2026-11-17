@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import tarfile
@@ -192,6 +193,10 @@ def download_release(feed, public_key=PUBLIC_KEY):
     return feed
 
 
+def exit_on_signal(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cleanup", action="store_true")
@@ -214,4 +219,6 @@ def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGHUP, exit_on_signal)
+    signal.signal(signal.SIGTERM, exit_on_signal)
     raise SystemExit(main())

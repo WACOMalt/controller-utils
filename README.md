@@ -32,10 +32,10 @@ curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packa
 
 The script detects your SteamOS channel, downloads the latest release, verifies
 it and installs the app.
-Installation asks for your password and briefly restarts SteamVR. Set a password
-with `passwd` first if you haven't already.
+Installation asks for confirmation and your password, then briefly restarts
+SteamVR. Set a password with `passwd` first if you haven't already.
 
-Open Controller Utils from the desktop launcher. Pair your gamepad with Frame,
+Open Controller Utils from Frame's app drawer (+). Pair your gamepad with Frame,
 leave Enable tracking on and follow the headset prompts.
 
 The app starts with SteamVR after its first launch. Change this in App settings.

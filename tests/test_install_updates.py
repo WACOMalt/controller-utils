@@ -1,9 +1,12 @@
 import json
 import os
+import pty
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -58,6 +61,11 @@ def sandbox(case, directory, parent_namespace):
     (root / "dev").mkdir()
     (root / "dev/null").touch()
     bind("/dev/null", root / "dev/null")
+    (root / "dev/tty").touch()
+    bind("/dev/tty", root / "dev/tty")
+    (root / "dev/pts").mkdir()
+    run("mount", "-t", "devpts", "-o", "newinstance,ptmxmode=0666", "devpts", str(root / "dev/pts"))
+    (root / "dev/ptmx").symlink_to("pts/ptmx")
     write(
         root / "etc/passwd",
         "root:x:0:0:root:/root:/bin/sh\nsteamos:x:1000:1000::/home/steamos:/bin/sh\n",
@@ -110,6 +118,9 @@ def sandbox(case, directory, parent_namespace):
         (ROOT / "packaging/controller-utils-update.service").read_text(),
     )
     write(source / "controller-utils-launcher", "launcher fixture", 0o755)
+    write(source / "latest.json", "metadata fixture")
+    write(source / "latest.sig", "signature fixture")
+    write(source / "controller-utils-0.1.5-11-linuxarm64.tar.gz", "archive fixture")
     write(
         source / "controller-utils",
         '#!/bin/sh\nprintf \'%s %s\\n\' "$(id -u)" "$*" >> /home/steamos/registration.log\n',
@@ -171,7 +182,11 @@ case "$*" in
     '--user mask --runtime steamvr.service') touch /home/steamos/steamvr.masked ;;
     '--user stop steamvr.service')
         [ -e /home/steamos/steamvr.masked ] || exit 1
-        [ -e /home/steamos/steamvr.inactive ] || touch /home/steamos/steamvr.inactive ;;
+        [ -e /home/steamos/steamvr.inactive ] || touch /home/steamos/steamvr.inactive
+        if [ -e /home/steamos/close-terminal ]; then
+            touch /home/steamos/worker-ready
+            while [ ! -e /home/steamos/continue-worker ]; do sleep 0.05; done
+        fi ;;
     '--user unmask --runtime steamvr.service') rm /home/steamos/steamvr.masked ;;
     '--user start steamvr.service')
         [ ! -e /home/steamos/steamvr.masked ] || exit 1
@@ -189,6 +204,15 @@ esac
         0o755,
     )
     write(root / "test-bin/udevadm", "#!/bin/sh\nexit 0\n", 0o755)
+    write(
+        root / "test-bin/systemd-run",
+        """#!/bin/sh
+[ "$1" = --user ] && [ "$2" = --scope ] && [ "$3" = --collect ] || exit 1
+while [ "${1#--}" != "$1" ]; do shift; done
+exec "$@"
+""",
+        0o755,
+    )
     shutil.copyfile("/usr/bin/sudo", root / "test-bin/sudo")
     (root / "test-bin/sudo").chmod(0o4755)
     shutil.copyfile("/usr/bin/install", root / "test-bin/install-real")
@@ -208,7 +232,7 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
 """,
         0o755,
     )
-    for name in ("uname", "systemctl", "install", "sudo", "udevadm"):
+    for name in ("uname", "systemctl", "install", "sudo", "udevadm", "systemd-run"):
         bind(root / "test-bin" / name, root / "usr/bin" / name)
     write(
         root / "opt/steamvr/bin/linuxarm64/vrpathreg",
@@ -303,13 +327,74 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
             "XDG_RUNTIME_DIR=/run/user/0",
             "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus",
         ]
+
+    def local_setup(arguments, answer=b"y\n"):
+        write(Path("/home/steamos/close-terminal"), "simulate session shutdown")
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.chown(os.ttyname(0), 1000, 1000)
+            os.execv(user_command[0], [*user_command, *arguments])
+        os.write(terminal, answer)
+        try:
+            deadline = time.monotonic() + 8
+            if answer != b"y\n":
+                while True:
+                    exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                    if exited is not None:
+                        return subprocess.CompletedProcess(arguments, exited.si_status, "", "")
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Setup did not cancel")
+                    time.sleep(0.02)
+            while not Path("/home/steamos/worker-ready").exists():
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Setup did not reach SteamVR shutdown")
+                time.sleep(0.02)
+            os.killpg(pid, signal.SIGHUP)
+            write(Path("/home/steamos/continue-worker"), "desktop has closed")
+            while True:
+                statuses = list((BASE / "app-data").glob(".setup.*/status"))
+                if statuses:
+                    status = int(statuses[0].read_text())
+                    return subprocess.CompletedProcess(
+                        arguments, status, "", (BASE / "app-data/setup.log").read_text()
+                    )
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Setup did not finish after its terminal closed")
+                time.sleep(0.02)
+        finally:
+            os.close(terminal)
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+
     command = [
         *user_command,
         "/bin/sh",
         "/opt/controller-utils/install.sh",
+        "--worker",
         "/opt/controller-utils",
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
+    if case == "local-piped-install":
+        result = local_setup(
+            [
+                "/bin/sh",
+                "-c",
+                "printf fixture | /bin/sh /opt/controller-utils/install.sh /opt/controller-utils",
+            ]
+        )
+    elif case in ("local-install", "cancel-install", "cancel-install-default"):
+        result = local_setup(
+            ["/bin/sh", "/opt/controller-utils/install.sh", "/opt/controller-utils"],
+            b"n\n"
+            if case == "cancel-install"
+            else b"\n"
+            if case == "cancel-install-default"
+            else b"y\n",
+        )
+    else:
+        result = subprocess.run(command, capture_output=True, text=True)
     repeated = None
     removed = None
     authorization = []
@@ -337,6 +422,9 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
         "stale-session-environment",
         "remove-no-user-manager",
         "remove-runtime-state-unavailable",
+        "local-uninstall",
+        "cancel-remove",
+        "cancel-remove-default",
     ):
         repeated = subprocess.run(command, capture_output=True, text=True).returncode
         write(BASE / "app-data/startup-recovery", "disabled recovery")
@@ -346,17 +434,28 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
             write(Path("/home/steamos/restart-failed"), "failed start job")
         elif case in ("remove-no-user-manager", "remove-runtime-state-unavailable"):
             write(Path("/home/steamos") / case.removeprefix("remove-"), "unavailable")
-        removed = subprocess.run(
-            [*user_command, "/bin/sh", str(BASE / "app/uninstall.sh")],
-            capture_output=True,
-            text=True,
-        )
+        if case in ("local-uninstall", "cancel-remove", "cancel-remove-default"):
+            removed = local_setup(
+                ["/bin/sh", str(BASE / "app/uninstall.sh")],
+                b"n\n"
+                if case == "cancel-remove"
+                else b"\n"
+                if case == "cancel-remove-default"
+                else b"y\n",
+            )
+        else:
+            removed = subprocess.run(
+                [*user_command, "/bin/sh", str(BASE / "app/install.sh"), "--worker", "--uninstall"],
+                capture_output=True,
+                text=True,
+            )
     if case == "partial-registration-failure" and result.returncode != 0:
         cleanup_status = subprocess.run(
             [
                 *user_command,
                 "/bin/sh",
                 "/opt/controller-utils/install.sh",
+                "--worker",
                 "--cleanup",
                 "/opt/controller-utils",
             ],
@@ -442,7 +541,9 @@ class InstallUpdatesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         missing = [
-            name for name in ("unshare", "mount", "runuser", "visudo") if not shutil.which(name)
+            name
+            for name in ("unshare", "mount", "runuser", "visudo", "tmux")
+            if not shutil.which(name)
         ]
         if missing:
             message = "Installer test tools are unavailable: " + ", ".join(missing)
@@ -518,6 +619,53 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertEqual(result["systemctl"].count("1000 --user show-environment"), 2)
         self.assertFalse(result["app_exists"] or result["root_exists"] or result["service_exists"])
         self.assertFalse(result["steamvr_masked"])
+
+    def test_installation_finishes_after_its_terminal_closes(self):
+        for case in ("local-install", "local-piped-install"):
+            with self.subTest(case=case):
+                result = self.check_case(case)
+                self.assertEqual(result["status"], 0, result["stderr"])
+                self.assertTrue(
+                    result["app_exists"] and result["root_exists"] and result["service_exists"]
+                )
+                self.assertEqual(result["registration"], ["1000 --prepare-registration"])
+                self.assertFalse(result["steamvr_masked"])
+                self.assertEqual(result["settings"], "preserved settings")
+
+    def test_installation_cancels_without_changes_on_no_or_enter(self):
+        for case in ("cancel-install", "cancel-install-default"):
+            with self.subTest(case=case):
+                result = self.check_case(case)
+                self.assertEqual(result["status"], 0, result["stderr"])
+                self.assertEqual(result["native"], [])
+                self.assertEqual(result["operations"], [])
+                self.assertEqual(result["systemctl"], ["1000 --user show-environment"])
+                self.assertFalse(result["app_exists"] or result["steamvr_masked"])
+                self.assertEqual(result["installed"], "previous updater\n")
+                self.assertEqual(result["settings"], "preserved settings")
+
+    def test_removal_cancels_without_changes_on_no_or_enter(self):
+        for case in ("cancel-remove", "cancel-remove-default"):
+            with self.subTest(case=case):
+                result = self.check_case(case)
+                self.assertEqual(result["status"], 0, result["stderr"])
+                self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
+                self.assertTrue(
+                    result["app_exists"] and result["root_exists"] and result["service_exists"]
+                )
+                self.assertEqual(result["registration"], ["1000 --prepare-registration"])
+                self.assertNotIn("0 --uninstall", result["native"])
+                self.assertFalse(result["steamvr_masked"])
+
+    def test_removal_finishes_after_its_terminal_closes(self):
+        result = self.check_case("local-uninstall")
+        self.assertEqual(result["status"], 0, result["stderr"])
+        self.assertEqual(result["remove_status"], 0, result["remove_stderr"])
+        self.assertFalse(result["app_exists"] or result["root_exists"] or result["service_exists"])
+        self.assertIn("0 --uninstall", result["native"])
+        self.assertFalse(result["steamvr_masked"])
+        self.assertEqual(result["settings"], "preserved settings")
+        self.assertEqual(result["calibration"], "preserved calibration")
 
     def test_unavailable_user_manager_stops_before_installation(self):
         result = self.check_case("no-user-manager")
@@ -611,6 +759,7 @@ class InstallUpdatesTest(unittest.TestCase):
         self.assertEqual(result["status"], 0, result["stderr"])
         self.assertNotEqual(result["remove_status"], 0)
         self.assertTrue(result["app_exists"] and result["root_exists"])
+        self.assertEqual(result["registration"][-1], "1000 --prepare-registration")
         self.assertFalse(result["steamvr_masked"])
         self.assertEqual(result["systemctl"][-1], "1000 --user start steamvr.service")
 

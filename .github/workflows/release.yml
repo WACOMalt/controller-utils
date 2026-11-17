@@ -70,7 +70,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             g++ clang lld llvm make pkg-config libegl1-mesa-dev libgl1-mesa-dev libegl-mesa0 libgl1-mesa-dri \
             libjson-c-dev libssl-dev libunwind-dev libarchive-dev libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev libsystemd-dev libboost-dev \
-            fonts-noto-core nodejs desktop-file-utils qemu-user-static
+            fonts-noto-core nodejs desktop-file-utils tmux qemu-user-static
           python -m pip install --requirement requirements-dev.txt
       - name: Build and verify
         run: |

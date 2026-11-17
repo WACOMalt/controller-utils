@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import signal
 import subprocess
 import tarfile
 import unittest
@@ -266,3 +267,20 @@ class BootstrapTest(unittest.TestCase):
                     run.call_args.args[0][:2], ["/bin/sh", str(installer / "install.sh")]
                 )
                 self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_interruption_cleans_bootstrap_files_and_preserves_installer_status(self):
+        for signum in (signal.SIGHUP, signal.SIGTERM):
+            with (
+                self.subTest(signum=signum),
+                patch("sys.argv", ["bootstrap.py", str(self.feed)]),
+                patch.object(bootstrap, "verify_package", return_value=self.root) as verify,
+                patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    side_effect=lambda *_args, **_kwargs: bootstrap.exit_on_signal(signum, None),
+                ),
+                self.assertRaises(SystemExit) as exited,
+            ):
+                bootstrap.main()
+            self.assertEqual(exited.exception.code, 128 + signum)
+            self.assertFalse(verify.call_args.args[1].parent.exists())

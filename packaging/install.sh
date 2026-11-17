@@ -106,7 +106,7 @@ if ! "$worker"; then
             rm -rf -- "$job/source" "$job/feed"
             exit "$status"
         ' setup "$job" "$@" || fail "Could not start setup. Check $job/output.log."
-    /usr/bin/env -u TMUX /usr/bin/tmux -S "$job/socket" attach-session -t setup <"$terminal" >"$terminal" 2>&1 || true
+    /usr/bin/env -u TMUX /usr/bin/tmux -S "$job/socket" attach-session -t setup <>"$terminal" >"$terminal" 2>&1 || true
     if [ -f "$job/status" ]; then
         status=$(cat "$job/status")
         [ "$status" = 0 ] || cat "$job/output.log" >&2

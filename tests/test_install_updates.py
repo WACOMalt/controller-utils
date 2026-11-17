@@ -185,6 +185,7 @@ case "$*" in
         [ -e /home/steamos/steamvr.masked ] || exit 1
         [ -e /home/steamos/steamvr.inactive ] || touch /home/steamos/steamvr.inactive
         if [ -e /home/steamos/close-terminal ]; then
+            printf '%s\\n' 'Waiting for terminal shutdown' >/dev/tty
             touch /home/steamos/worker-ready
             while [ ! -e /home/steamos/continue-worker ]; do sleep 0.05; done
         fi ;;
@@ -362,10 +363,14 @@ os.execv('/test-bin/install-real', ['install', *sys.argv[1:]])
                             "Setup did not cancel:\n" + output.decode(errors="replace")
                         )
                     read_terminal()
-            while not Path("/home/steamos/worker-ready").exists():
+            while (
+                not Path("/home/steamos/worker-ready").exists()
+                or b"Waiting for terminal shutdown" not in output
+            ):
                 if time.monotonic() >= deadline:
                     raise RuntimeError(
-                        "Setup did not reach SteamVR shutdown:\n" + output.decode(errors="replace")
+                        "Setup did not display its worker prompt:\n"
+                        + output.decode(errors="replace")
                     )
                 read_terminal()
             os.killpg(pid, signal.SIGHUP)

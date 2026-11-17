@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import signal
 import subprocess
 import tarfile
 import unittest
@@ -245,16 +246,69 @@ class BootstrapTest(unittest.TestCase):
         self.assertEqual(command[command.index("--max-filesize") + 1], "64")
         self.assertTrue(run.call_args.kwargs["check"])
 
-    def test_no_arguments_downloads_and_runs_the_verified_installer(self):
+    def test_downloads_and_propagates_verified_installer_exit_status(self):
+        installer = self.root / "verified-installer"
+        for status in (0, 1, 23):
+            with (
+                self.subTest(status=status),
+                patch("sys.argv", ["bootstrap.py"]),
+                patch.object(bootstrap, "download_release", return_value=self.feed) as fetch,
+                patch.object(bootstrap, "verify_package", return_value=installer) as verify,
+                patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], status),
+                ) as run,
+            ):
+                self.assertEqual(bootstrap.main(), status)
+                fetch.assert_called_once()
+                self.assertEqual(verify.call_args.args[0], self.feed)
+                self.assertEqual(
+                    run.call_args.args[0][:2], ["/bin/sh", str(installer / "install.sh")]
+                )
+                self.assertFalse(run.call_args.kwargs["check"])
+
+    def test_interruption_cleans_bootstrap_files_and_preserves_installer_status(self):
+        for signum in (signal.SIGHUP, signal.SIGTERM):
+            with (
+                self.subTest(signum=signum),
+                patch("sys.argv", ["bootstrap.py", str(self.feed)]),
+                patch.object(bootstrap, "verify_package", return_value=self.root) as verify,
+                patch.object(
+                    bootstrap.subprocess,
+                    "run",
+                    side_effect=lambda *_args, **_kwargs: bootstrap.exit_on_signal(signum, None),
+                ),
+                self.assertRaises(SystemExit) as exited,
+            ):
+                bootstrap.main()
+            self.assertEqual(exited.exception.code, 128 + signum)
+            self.assertFalse(verify.call_args.args[1].parent.exists())
+
+    def test_uninstall_runs_the_verified_installer_without_a_feed_argument(self):
         installer = self.root / "verified-installer"
         with (
-            patch("sys.argv", ["bootstrap.py"]),
-            patch.object(bootstrap, "download_release", return_value=self.feed) as fetch,
+            patch("sys.argv", ["bootstrap.py", "--uninstall", str(self.feed)]),
             patch.object(bootstrap, "verify_package", return_value=installer) as verify,
-            patch.object(bootstrap.subprocess, "run") as run,
+            patch.object(
+                bootstrap.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+            ) as run,
+        ):
+            self.assertEqual(bootstrap.main(), 0)
+        self.assertEqual(verify.call_args.args[0], self.feed)
+        self.assertEqual(
+            run.call_args.args[0], ["/bin/sh", str(installer / "install.sh"), "--uninstall"]
+        )
+
+    def test_cleanup_and_uninstall_cannot_be_combined(self):
+        with (
+            patch("sys.argv", ["bootstrap.py", "--cleanup", "--uninstall"]),
+            patch.object(bootstrap, "download_release") as download,
+            patch.object(bootstrap, "verify_package") as verify,
+            patch("sys.stderr", new_callable=io.StringIO),
+            self.assertRaises(SystemExit) as exited,
         ):
             bootstrap.main()
-        fetch.assert_called_once()
-        self.assertEqual(verify.call_args.args[0], self.feed)
-        self.assertEqual(run.call_args.args[0][:2], ["/bin/sh", str(installer / "install.sh")])
-        self.assertTrue(run.call_args.kwargs["check"])
+        self.assertEqual(exited.exception.code, 2)
+        download.assert_not_called()
+        verify.assert_not_called()

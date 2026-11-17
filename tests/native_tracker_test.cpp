@@ -18,6 +18,9 @@ static Control state{};
 static std::atomic<unsigned> destroys{}, private_calls{}, stock_calls{}, sequence{};
 static std::atomic<bool> blocked{}, release_call{}, identity_valid{true};
 static int failure;
+static bool native_started;
+static bool native_settings_loaded;
+static unsigned bootstrap_preset;
 static bool fail_thread_create;
 static std::atomic<bool> pause_cleanup{}, cleanup_waiting{}, release_cleanup{};
 static std::atomic<bool> block_create{}, create_waiting{}, release_create{};
@@ -56,14 +59,27 @@ bool test_identity() {
 }
 void test_construct(Wrapper target, void *) {
     *target = owned_manager;
+    native_started = false;
+    native_settings_loaded = false;
+    bootstrap_preset = 0;
     if (failure == 1)
         throw 42;
+}
+void test_initialize_settings(Wrapper target) {
+    assert(*target == owned_manager);
+    assert(native_started);
+    if (failure == 5)
+        throw 46;
+    native_settings_loaded = true;
+    bootstrap_preset = 1;
 }
 void test_start(Wrapper) {
     if (failure == 2)
         throw 43;
+    native_started = true;
 }
 void test_configure(Wrapper) {
+    bootstrap_preset = 3;
     if (failure == 3)
         throw 44;
 }
@@ -94,6 +110,11 @@ static void frame_next(Wrapper target, void *p, void *h, void *acc, u32 a, void 
     if (target == &stock_manager)
         sequence = 1;
     else {
+        if (!native_settings_loaded) {
+            native_settings_loaded = true;
+            bootstrap_preset = 1;
+        }
+        assert(bootstrap_preset == 3);
         assert(sequence == 1);
         sequence = 2;
     }
@@ -695,7 +716,7 @@ int main() {
     assert(leased(lease, 1) && !leased(lease, 1000000000) && !leased(lease, 0));
     lease.deadline_raw_ns = ~u64(0);
     assert(!leased(lease, 1));
-    for (int scenario = 0; scenario < 21; ++scenario) {
+    for (int scenario = 0; scenario < 22; ++scenario) {
         auto pid = fork();
         assert(pid >= 0);
         if (!pid) {
@@ -736,7 +757,10 @@ int main() {
                 test_concurrent_attach_creates_one_worker();
             else if (scenario == 20)
                 test_contended_publishers_sleep();
-            else {
+            else if (scenario == 21) {
+                failure = 5;
+                test_failure();
+            } else {
                 failure = scenario - 2;
                 test_failure();
             }

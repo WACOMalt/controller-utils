@@ -26,7 +26,7 @@ struct Dashboard {
     std::string input_state = "Off";
     bool steam_shortcuts = true;
     std::string pointer_label = "R4";
-    int brightness = 100, smoothing = 40, page = 0, pointer_buttons = 0x80;
+    int brightness = 100, smoothing = 20, page = 0, pointer_buttons = 0x80;
     cairo_surface_t *artwork = nullptr;
     const char *hovered = nullptr;
     const char *pressed = nullptr;

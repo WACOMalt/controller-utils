@@ -275,6 +275,7 @@ static void transform(void *manager, void *output) {
 
 #ifdef CT_ISOLATION_TEST
 extern void test_construct(Wrapper, void *);
+extern void test_initialize_settings(Wrapper);
 extern void test_start(Wrapper);
 extern void test_configure(Wrapper);
 extern void test_destroy(Wrapper);
@@ -286,6 +287,7 @@ static void start() {
     test_start(&private_manager);
 }
 static void configure() {
+    test_initialize_settings(&private_manager);
     test_configure(&private_manager);
 }
 static void destroy() {
@@ -319,6 +321,7 @@ static void configure() {
         fail(11);
         return;
     }
+    reinterpret_cast<void (*)(void *)>(0xeb5820)(manager);
     store(reinterpret_cast<unsigned char *>(manager + 0x2c8), static_cast<unsigned char>(0));
     struct String {
         const char *data;

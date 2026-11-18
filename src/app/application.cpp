@@ -249,26 +249,29 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
                            now - latest_input_->received <= .15;
         const auto actions =
             gestures_.update(fresh ? latest_input_->report.buttons : 0, now,
-                             options_.steam_shortcuts && allow && fresh, allow && fresh);
+                             options_.steam_shortcuts && allow && fresh, allow && fresh, false);
         shortcut_actions.insert(shortcut_actions.end(), actions.begin(), actions.end());
     }
     if (sample) {
         latest_input_ = sample;
         host_.send(controls_message(*sample, raw_() - monotonic_()));
     }
+    bool camera_requested = false;
     for (const auto &name : shortcut_actions) {
+        if (name == "camera_switch") {
+            camera_requested = true;
+            continue;
+        }
+        auto &feature_status = name == "keyboard" ? keyboard_status_ : shortcut_status_;
         try {
-            if (name == "keyboard") {
+            if (name == "keyboard")
                 host_.request_keyboard();
-                keyboard_status_.reset();
-            } else {
+            else
                 host_.shortcut(name);
-                shortcut_status_.reset();
-            }
+            feature_status.reset();
         } catch (const std::exception &error) {
             if (!shortcut_failure(error))
                 throw;
-            auto &feature_status = name == "keyboard" ? keyboard_status_ : shortcut_status_;
             feature_status = error.what();
             host_.log(*feature_status);
         }
@@ -318,6 +321,27 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
     }
     if (!running_)
         return;
+    const bool camera_ready =
+        allow && options_.steam_shortcuts &&
+        (!options_.tracking_enabled || (!restart && session_ && session_->acquired()));
+    const bool camera_conflict = options_.pointer_buttons == CameraSwitchButton;
+    if (!options_.steam_shortcuts || !connected)
+        camera_status_.reset();
+    if (auto error = host_.camera_switch_error(camera_ready && !camera_conflict)) {
+        camera_status_ = *error;
+        host_.log(*error);
+    }
+    if (camera_requested && camera_ready) {
+        try {
+            if (camera_conflict)
+                throw std::runtime_error("Choose a different UI control button to use Steam + L1.");
+            host_.shortcut("camera_switch");
+            camera_status_.reset();
+        } catch (const std::runtime_error &error) {
+            camera_status_ = error.what();
+            host_.log(*camera_status_);
+        }
+    }
     try {
         if (session_ && (!options_.tracking_enabled || !awake || !connected)) {
             send_op("hide");
@@ -408,8 +432,8 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
         }
         auto value = options_.to_json();
         put(value.get(), "op", std::string("status"));
-        const std::array<const std::optional<std::string> *, 6> problems{
-            &tracking_problem_, &input_status_,     &shortcut_status_,
+        const std::array<const std::optional<std::string> *, 7> problems{
+            &tracking_problem_, &input_status_,     &shortcut_status_, &camera_status_,
             &system_status_,    &animation_status_, &keyboard_status_};
         const auto count = std::count_if(problems.begin(), problems.end(),
                                          [](const auto *problem) { return bool(*problem); });

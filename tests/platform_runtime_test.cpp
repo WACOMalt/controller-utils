@@ -51,6 +51,7 @@ int main() {
     auto options = ct::load_settings(saved);
     assert(options.tracking_enabled && options.pointer_buttons == 0x80);
     assert(options.steam_shortcuts);
+    assert(options.smoothing_ms == 20);
     options.brightness = 60;
     options.tracking_enabled = false;
     options.steam_shortcuts = false;
@@ -63,8 +64,10 @@ int main() {
     rejects([&] { ct::save_settings(saved, options); }, "invalid smoothing_ms");
     assert(ct::read_file(saved, 131072) == contents);
     ct::atomic_write(saved, R"({"brightness":80,"smoothing_ms":40})");
-    assert(ct::load_settings(saved).brightness == 80);
-    assert(ct::load_settings(saved).steam_shortcuts);
+    loaded = ct::load_settings(saved);
+    assert(loaded.brightness == 80);
+    assert(loaded.steam_shortcuts);
+    assert(loaded.smoothing_ms == 40);
     ct::atomic_write(saved, "corrupt settings");
     rejects([&] { ct::load_settings(saved); }, "invalid JSON");
     assert(ct::read_file(saved, 131072) == "corrupt settings");

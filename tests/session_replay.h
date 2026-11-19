@@ -105,6 +105,7 @@ class Runtime final : public ct::RuntimeView {
 
   public:
     bool awake = true;
+    std::optional<ct::TrackingSpace> space;
     ct::RigidPose head{1, 0, 0, 0, 0, 1, 0, 1.6, 0, 0, 1, 0};
     explicit Runtime(ct::QueueContext &queues) : queues_(queues) {}
     std::vector<ct::RuntimeDevice> devices() override {
@@ -115,6 +116,9 @@ class Runtime final : public ct::RuntimeView {
     }
     std::optional<ct::RigidPose> head_pose(int = 1) override {
         return awake ? std::optional<ct::RigidPose>(head) : std::nullopt;
+    }
+    std::optional<ct::TrackingSpace> tracking_space() override {
+        return space;
     }
     ct::QueueContext &queues() override {
         return queues_;

@@ -18,6 +18,11 @@ namespace ct {
 json::Value tracking_feedback(double now, const std::string &state, const std::string &message,
                               std::optional<double> progress = std::nullopt);
 
+class HeadsetAsleep : public std::runtime_error {
+  public:
+    HeadsetAsleep() : std::runtime_error("Headset asleep. Tracking will resume when worn.") {}
+};
+
 class TrackingSessionView {
   public:
     AlignmentGuide guide;
@@ -32,6 +37,19 @@ class TrackingSessionView {
     virtual void acquire() = 0;
     virtual void recenter() = 0;
     virtual void rebase(const RigidPose &delta) = 0;
+    virtual std::optional<TrackingCheckpoint> checkpoint() const {
+        return {};
+    }
+    virtual void resume_from(TrackingCheckpoint) {}
+    virtual bool pause_optics(const std::vector<ControllerInput> &) {
+        return false;
+    }
+    virtual bool standby_imu(const std::vector<ControllerInput> &) {
+        return false;
+    }
+    virtual bool wake_optics() {
+        return false;
+    }
     virtual json::Value presentation() = 0;
     virtual void close() = 0;
 };
@@ -44,9 +62,12 @@ class TrackingSession final : public TrackingSessionView, private InputBackend {
     std::function<void(const TrackingCalibration &)> save_calibration_;
     Settings options_;
     ChildFactory children_;
+    SteamUiFactory steam_ui_;
     bool closed_ = false, device_configured_ = false;
     bool helper_ready_ = false, helper_restored_ = false;
     std::unique_ptr<ChildChannel> helper_;
+    std::optional<json::Value> palm_sample_;
+    void observe_palms(double now);
     std::unique_ptr<SteamUiSession> filter_;
     std::unique_ptr<NativeTracking> native_;
     std::optional<InputControl> input_;
@@ -61,6 +82,18 @@ class TrackingSession final : public TrackingSessionView, private InputBackend {
     std::optional<int> brightness_;
     std::string serial_, alignment_hint_ = "Hold the gamepad still for a moment.";
     std::optional<NativeBodyPose> tracker_;
+    std::optional<TrackingCheckpoint> checkpoint_, resume_;
+    double last_checkpoint_ = 0;
+    bool warm_ = false;
+    struct ParkedPosition {
+        Vector3 native, display;
+    };
+    std::optional<ParkedPosition> parked_;
+    unsigned standby_recoveries_ = 0;
+    void open_services();
+    std::vector<std::string> close_services();
+    void check_parked(const ControllerReport &report);
+    void discard_warm_heading(const char *reason);
     void poll_helper(double now);
     void recover_imu(double now);
     NativeBodyPose new_mapper() const;
@@ -85,7 +118,7 @@ class TrackingSession final : public TrackingSessionView, private InputBackend {
     TrackingSession &operator=(const TrackingSession &) = delete;
     ~TrackingSession() override;
     bool acquired() const override {
-        return initial.ready;
+        return initial.ready && !warm_;
     }
     const InputControl::State &input_state() const override;
     void controls(const std::optional<ControllerInput> &input, bool enabled,
@@ -95,6 +128,11 @@ class TrackingSession final : public TrackingSessionView, private InputBackend {
     void acquire() override;
     void recenter() override;
     void rebase(const RigidPose &delta) override;
+    std::optional<TrackingCheckpoint> checkpoint() const override;
+    void resume_from(TrackingCheckpoint saved) override;
+    bool pause_optics(const std::vector<ControllerInput> &reports) override;
+    bool standby_imu(const std::vector<ControllerInput> &reports) override;
+    bool wake_optics() override;
     json::Value presentation() override;
     void close() override;
 };

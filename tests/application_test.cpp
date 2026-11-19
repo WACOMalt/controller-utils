@@ -27,14 +27,13 @@ class IntegratedHost final : public app_replay::Host {
     }
     std::unique_ptr<ct::TrackingSessionView> track(const ct::Settings &options) override {
         record("track");
-        helper = std::make_shared<session_replay::ChildState>();
-        filter = std::make_shared<session_replay::ChildState>();
-        helper->pending.push_back(j::parse(R"({"op":"native_helper_ready","isolated":true})"));
-        helper->pending.push_back(j::parse(R"({"op":"input_gate_ready"})"));
-        helper->pending.push_back(j::parse(R"({"op":"beam_gate_ready"})"));
         auto children =
             [&](const std::vector<std::string> &command) -> std::unique_ptr<ct::ChildChannel> {
-            assert(command.front() == "/usr/bin/sudo");
+            assert(command.front() == "/usr/bin/sudo" && command.back() == "--private");
+            helper = std::make_shared<session_replay::ChildState>();
+            helper->pending.push_back(j::parse(R"({"op":"native_helper_ready","isolated":true})"));
+            helper->pending.push_back(j::parse(R"({"op":"input_gate_ready"})"));
+            helper->pending.push_back(j::parse(R"({"op":"beam_gate_ready"})"));
             return std::make_unique<session_replay::Channel>(helper, "helper", now,
                                                              helper_events_pointer);
         };
@@ -44,6 +43,7 @@ class IntegratedHost final : public app_replay::Host {
             runtime, reader.device(), calibration, options, children,
             [&](const std::string &serial, bool keyboard) -> std::unique_ptr<ct::SteamUiSession> {
                 assert(serial == "TEST1234" && !keyboard);
+                filter = std::make_shared<session_replay::ChildState>();
                 return std::make_unique<session_replay::SteamUi>(filter, now,
                                                                  helper_events_pointer);
             },
@@ -288,8 +288,21 @@ int main() {
         assert(count(host, "inspect_permissions") == 1 && count(host, "repair_permissions") == 1);
         app.close();
     }
-    {
+    enum class Wake {
+        Disconnect,
+        Table,
+        DriftOnTable,
+        Moved,
+        RoomChanged,
+        OriginChanged,
+        StreamLost,
+        LongSleep
+    };
+    for (auto scenario :
+         {Wake::Disconnect, Wake::Table, Wake::DriftOnTable, Wake::Moved, Wake::RoomChanged,
+          Wake::OriginChanged, Wake::StreamLost, Wake::LongSleep}) {
         IntegratedHost host;
+        host.runtime.space = ct::TrackingSpace{4, ct::rigid_pose({1, 0, 0, 0}, {})};
         auto current = j::parse("{}");
         host.current = current.get();
         ct::Application app(
@@ -298,7 +311,11 @@ int main() {
         auto reports = host.reader.poll(true);
         app.step(true, host.reader.connected(), reports);
         assert(count(host, "track") == 1 && host.hid->brightness == 100 && host.hid->raw);
-        for (unsigned i = 1; i <= 360; ++i) {
+        unsigned i = 0;
+        double emitter_x = .08;
+        auto tick = [&](bool awake, bool optical, double yaw_rate = 0) {
+            ++i;
+            host.runtime.awake = awake;
             host.now += .01;
             host.hid->time = host.now;
             std::vector<uint8_t> bytes(46);
@@ -306,33 +323,178 @@ int main() {
             bytes[37] = 0x40;
             for (unsigned n = 0; n < 4; ++n)
                 bytes[30 + n] = uint8_t(i * 10000 >> (8 * n));
+            const auto gyro = uint16_t(std::lround(yaw_rate * 16.384 * 180 / std::acos(-1.)));
+            bytes[42] = uint8_t(gyro);
+            bytes[43] = uint8_t(gyro >> 8);
             host.hid->pending.push_back(bytes);
             ct::wire::PoseBlock pose{};
             pose.controller_id = 16;
             pose.timestamp = host.now + 1000 - .02;
             pose.orientation[1] = -1;
-            pose.position[0] = .08;
-            pose.position[1] = -1.4;
-            pose.position[2] = .42;
+            const auto emitter = ct::transform_point(
+                ct::inverse_pose(host.runtime.space->raw_to_standing), {emitter_x, 1.4, -.42});
+            pose.position[0] = emitter[0];
+            pose.position[1] = -emitter[1];
+            pose.position[2] = -emitter[2];
             host.queue.packets[3].resize(sizeof(pose));
             std::memcpy(host.queue.packets[3].data(), &pose, sizeof(pose));
-            if (i % 10 == 0) {
+            if (!optical)
+                host.queue.packets.erase(3);
+            if (optical && i % 10 == 0) {
                 auto quality = j::parse(R"({"op":"native_helper_quality","good":true})");
                 json_object_object_add(quality.get(), "time",
                                        json_object_new_double(host.now + 1000));
                 host.helper->pending.push_back(std::move(quality));
             }
-            reports = host.reader.poll(true);
-            app.step(true, host.reader.connected(), reports);
-        }
+            reports =
+                host.reader.poll(awake || (host.reader.connected() && app.keep_controller_open()));
+            app.step(awake, host.reader.connected(), reports);
+        };
+        for (unsigned n = 0; n < 360; ++n)
+            tick(true, true);
         assert(host.session->initial.ready);
-        bool rendered = false;
+        if (scenario == Wake::DriftOnTable) {
+            // Carry the pad and palm together, then lose the palm while native position runs ahead.
+            for (unsigned n = 0; n < 80; ++n) {
+                emitter_x += n < 60 ? .0015 : .006;
+                if (n % 5 == 0) {
+                    auto event = j::parse(
+                        R"({"op":"native_helper_palms","samples":[null,{"accepted":true}]})");
+                    auto palm = j::item(j::field(event.get(), "samples"), 1);
+                    json_object_object_add(palm, "latest_time",
+                                           json_object_new_double(host.now + 1000 - .01));
+                    json_object_object_add(
+                        palm, "pose",
+                        j::value(std::array<double, 7>{1, 0, 0, 0, std::min(.17, emitter_x) - .07,
+                                                       -1.4, .42}));
+                    host.helper->pending.push_back(std::move(event));
+                }
+                tick(true, true, .14);
+            }
+            for (int n = 0; n < 48; ++n)
+                tick(true, true);
+        }
+        const auto checkpoint = host.session->checkpoint();
+        assert(checkpoint && checkpoint->serial == "TEST1234" && checkpoint->space.universe == 4);
+        std::optional<ct::Vector3> rendered;
         for (size_t i = 0; i < j::array_size(host.trace.get()); ++i) {
             auto row = j::item(host.trace.get(), i);
-            if (j::string(j::item(row, 1)) == "send")
-                rendered |= j::string(j::field(j::item(row, 2), "op")) == "native_pose";
+            if (j::string(j::item(row, 1)) == "send" &&
+                j::string(j::field(j::item(row, 2), "op")) == "native_pose")
+                rendered = j::numbers<3>(j::field(j::item(row, 2), "position"));
         }
         assert(rendered);
+        if (scenario == Wake::DriftOnTable)
+            assert(ct::distance(*rendered, checkpoint->pose.position) > .04);
+        if (scenario != Wake::Disconnect) {
+            const auto original_helper = host.helper;
+            // The HMD can lose its pose between the runner's poll and the session's poll.
+            host.runtime.awake = false;
+            app.step(true, true, {});
+            assert(!original_helper->stopped);
+            tick(false, false);
+            assert(original_helper->stopped && host.filter->stopped && host.hid->raw &&
+                   host.hid->brightness == 25);
+            if (scenario == Wake::Table) {
+                auto change =
+                    j::parse(R"({"events":[{"op":"action","action":"brightness_down"}]})");
+                host.current = change.get();
+                tick(false, false);
+                host.current = current.get();
+                assert(app.options().brightness == 90 && host.hid->brightness == 25);
+            }
+            if (scenario == Wake::LongSleep || scenario == Wake::StreamLost) {
+                host.now += scenario == Wake::LongSleep ? 31 : .25;
+                app.step(false, true, {});
+                assert(!app.keep_controller_open() && !host.hid->raw);
+                continue;
+            }
+            for (unsigned n = 0; n < 50; ++n)
+                tick(false, false, scenario == Wake::Moved ? 1 : 0);
+            const ct::Quaternion relocalized{std::cos(.15), 0, std::sin(.15), 0};
+            host.runtime.space = ct::TrackingSpace{99, ct::rigid_pose(relocalized, {.25, 0, 0})};
+            host.runtime.head = ct::rigid_pose({0, 0, 1, 0}, {0, 1.6, 0});
+            for (unsigned n = 0; n < 100; ++n)
+                tick(true, false);
+            assert(host.helper == original_helper);
+            if (scenario == Wake::RoomChanged) {
+                for (unsigned n = 0; n < 210; ++n)
+                    tick(true, false);
+                assert(count(host, "track") == 2 && !host.session->initial.ready);
+                continue;
+            }
+            host.runtime.space->universe = 4;
+            const auto before = j::array_size(host.trace.get());
+            const auto first_command = host.queue.writes.size();
+            current = j::parse(R"({"events":[{"op":"pointer_enabled","enabled":true}]})");
+            host.current = current.get();
+            for (unsigned n = 0; n < 240; ++n)
+                tick(true, false);
+            assert(count(host, "track") == 1 && host.helper != original_helper &&
+                   !host.session->initial.ready && !host.session->input_state().native_active);
+            if (scenario == Wake::Table) {
+                assert(host.hid->brightness == 90);
+                for (unsigned n = 0; n < 100; ++n) {
+                    auto quality = j::parse(R"({"op":"native_helper_quality","good":true})");
+                    json_object_object_add(quality.get(), "time",
+                                           json_object_new_double(host.now + 1000));
+                    host.helper->pending.push_back(std::move(quality));
+                    tick(true, false);
+                }
+                assert(host.session->initial.ready && !host.session->acquired());
+            }
+            unsigned input_packets = 0;
+            for (size_t n = first_command; n < host.queue.writes.size(); ++n) {
+                const auto &command = host.queue.writes[n];
+                if (command.kind == 3) {
+                    ct::wire::AppInput input{};
+                    std::memcpy(&input, command.data, sizeof(input));
+                    assert(input.flags == 0 && input.pose_time == 0);
+                    ++input_packets;
+                }
+            }
+            assert(input_packets > 0);
+            bool parked = false;
+            for (size_t row = before; row < j::array_size(host.trace.get()); ++row) {
+                auto entry = j::item(host.trace.get(), row);
+                if (j::string(j::item(entry, 1)) != "send")
+                    continue;
+                auto value = j::item(entry, 2);
+                if (j::string(j::field(value, "op")) == "native_pose") {
+                    auto point = j::numbers<3>(j::field(value, "position"));
+                    const auto standing =
+                        ct::transform_point(host.runtime.space->raw_to_standing, point);
+                    assert(ct::distance(standing, *rendered) < .001);
+                    assert(j::number(j::field(value, "time")) < host.now + 1000 - 1);
+                    parked = true;
+                }
+            }
+            assert(parked == (scenario != Wake::Moved));
+            if (scenario == Wake::OriginChanged) {
+                host.runtime.space->universe = 8;
+                auto event = j::parse(
+                    R"({"events":[{"op":"origin_changed","transform":[1,0,0,0.3,0,1,0,0,0,0,1,0]}]})");
+                host.current = event.get();
+                tick(true, false);
+                host.current = current.get();
+            }
+            const unsigned optical_ticks = scenario == Wake::OriginChanged ? 150 : 95;
+            for (unsigned n = 0; n < optical_ticks; ++n)
+                tick(true, true);
+            const auto restored = host.session->checkpoint();
+            assert(restored && host.session->initial.ready);
+            const auto standing_heading = ct::multiply(relocalized, restored->pose.orientation);
+            const double angle =
+                2 * std::acos(std::min(
+                        1., std::abs(ct::dot(checkpoint->pose.orientation, standing_heading))));
+            if (scenario == Wake::Moved)
+                assert(angle > .45 && angle < .55);
+            else if (scenario == Wake::OriginChanged)
+                assert(angle > 2.5);
+            else
+                assert(angle < .001);
+            continue;
+        }
         host.hid->receive_error = ENODEV;
         reports = host.reader.poll(true);
         assert(!host.reader.connected() && !host.hid->closed);
@@ -470,6 +632,41 @@ int main() {
          R"({"op":"keyboard_state","time":1100,"visible":true,"gaze_valid":true})",
          R"({"op":"origin_changed","transform":[1,0]})"})
         event_boundary(event);
+    {
+        struct WakeHost final : app_replay::Host {
+            bool controllers_ready = false;
+            bool stock_tracking_ready() override {
+                return controllers_ready;
+            }
+        } host;
+        auto current = j::parse("{}");
+        host.current = current.get();
+        ct::Application app(
+            host, {}, std::nullopt, true, [&] { return host.now; },
+            [&] { return host.now + 1000; });
+        app.step(true, true, {});
+        app.step(false, false, {});
+        app.step(true, true, {});
+        host.now += 1;
+        app.step(true, true, {});
+        assert(count(host, "close") == 1 && count(host, "track") == 1);
+        app.step(false, false, {});
+        app.step(true, true, {});
+        host.controllers_ready = true;
+        host.now += .5;
+        app.step(true, true, {});
+        assert(count(host, "track") == 1);
+        host.now += .3;
+        app.step(true, true, {});
+        assert(count(host, "track") == 2);
+
+        app.step(false, false, {});
+        app.step(true, true, {});
+        host.controllers_ready = false;
+        host.now += 3.01;
+        app.step(true, true, {});
+        assert(count(host, "track") == 3);
+    }
     for (unsigned cycle = 0; cycle < 100; ++cycle) {
         app_replay::Host host;
         auto current = j::parse("{}");
@@ -483,6 +680,9 @@ int main() {
         assert(count(host, "track") == 1 && app.cadence() == .004);
         app.step(false, true, {});
         assert(count(host, "close") == 1 && app.cadence() == .02);
+        app.step(true, true, {});
+        assert(count(host, "track") == 1);
+        host.now += .76;
         app.step(true, true, {});
         assert(count(host, "track") == 2);
         app.show_settings();

@@ -101,6 +101,31 @@ std::optional<unsigned> Runtime::primary_dashboard_device() {
     }
     return std::nullopt;
 }
+std::optional<TrackingSpace> Runtime::tracking_space() {
+    if (!initialized_)
+        throw std::logic_error("OpenVR runtime is closed");
+    vr::ETrackedPropertyError error = vr::TrackedProp_Success;
+    const auto universe =
+        system->GetUint64TrackedDeviceProperty(0, vr::Prop_CurrentUniverseId_Uint64, &error);
+    // Frame publishes this temporary universe while its cameras are asleep.
+    if (error || universe <= 1 || universe == 424242)
+        return {};
+    const auto matrix = system->GetRawZeroPoseToStandingAbsoluteTrackingPose();
+    RigidPose transform{};
+    for (size_t row = 0; row < 3; ++row)
+        for (size_t column = 0; column < 4; ++column)
+            transform[row * 4 + column] = matrix.m[row][column];
+    if (system->GetUint64TrackedDeviceProperty(0, vr::Prop_CurrentUniverseId_Uint64, &error) !=
+            universe ||
+        error)
+        return {};
+    try {
+        validate_pose(transform);
+    } catch (const std::invalid_argument &) {
+        return {};
+    }
+    return TrackingSpace{universe, transform};
+}
 QueueContext &Runtime::queues() {
     if (!initialized_)
         throw std::logic_error("OpenVR runtime is closed");

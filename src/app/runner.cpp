@@ -20,8 +20,9 @@ int run_application(NativeApplicationHost &host, Runtime &runtime, ControllerRea
             }
             if (!application.running())
                 break;
-            const auto awake = bool(runtime.head_pose());
-            const auto reports = reader.poll(awake);
+            const auto awake = bool(runtime.head_pose(2));
+            const auto reports =
+                reader.poll(awake || (reader.connected() && application.keep_controller_open()));
             application.step(awake, reader.connected(), reports);
             sleep_for(application.cadence());
         }

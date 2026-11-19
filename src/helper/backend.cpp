@@ -84,6 +84,18 @@ std::vector<json::Value> XrBackend::poll(bool requested) {
     }
     if (!announced_ && now - started_at_ > 12)
         throw std::runtime_error("Private native tracker did not receive camera frames in time.");
+    if (live && !requested && now >= palms_at_) {
+        palms_at_ = now + .09;
+        try {
+            const auto snapshot = acquisition_.snapshot(state.wrapper, true);
+            auto row = message("native_helper_palms");
+            if (auto palms = json::find(snapshot.get(), "palm_estimators_raw"))
+                json_object_object_add(row.get(), "samples", json_object_get(palms));
+            events.push_back(std::move(row));
+        } catch (const std::invalid_argument &) {
+            // The camera worker can update its observation during a read.
+        }
+    }
     if (now >= sample_at_) {
         if (announced_ && requested) {
             bool good = false;

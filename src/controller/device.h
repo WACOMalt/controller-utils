@@ -62,6 +62,7 @@ class ControllerDevice {
     void enable_imu();
     void resume_imu();
     void enable_ir(unsigned brightness = 100);
+    void restore_ir();
     void restore();
     void close();
 };

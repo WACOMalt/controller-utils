@@ -25,7 +25,7 @@ class XrBackend final : public TrackingBackend {
     AcquisitionReader acquisition_;
     bool started_ = false, announced_ = false;
     unsigned attempts_ = 0;
-    double started_at_ = 0, sample_at_ = 0, frames_at_ = 0;
+    double started_at_ = 0, sample_at_ = 0, palms_at_ = 0, frames_at_ = 0;
     uint64_t frames_ = 0;
 
   public:

@@ -178,6 +178,16 @@ int main() {
         });
         assert(ct::json::boolean(ct::json::field(quality->get(), "good")));
         assert(backend.poll(true).empty());
+        const auto hands = backend.poll(false);
+        const auto palms = std::find_if(hands.begin(), hands.end(), [](const auto &row) {
+            return ct::json::string(ct::json::field(row.get(), "op")) == "native_helper_palms";
+        });
+        assert(palms != hands.end());
+        const auto samples = ct::json::field(palms->get(), "samples");
+        assert(ct::json::array_size(samples) == 2);
+        assert(ct::json::array_size(ct::json::field(ct::json::item(samples, 0), "pose")) == 7);
+        assert(!ct::json::find(ct::json::item(samples, 1), "pose"));
+        assert(backend.poll(false).empty());
         raw += 100000000;
         backend.renew();
         assert(host.control().deadline_raw_ns == raw + 1500000000ULL);

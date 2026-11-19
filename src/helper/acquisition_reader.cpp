@@ -153,7 +153,7 @@ json::Value AcquisitionReader::feature_group(uintptr_t address) {
         throw std::invalid_argument("native feature headers changed");
     return result;
 }
-json::Value AcquisitionReader::palm_estimator(uintptr_t address) {
+json::Value AcquisitionReader::palm_estimator(uintptr_t address, bool include_pose) {
     const auto header = bytes(address, 0x2a8);
     std::array<size_t, 4> counts{};
     const std::pair<size_t, size_t> vectors[]{
@@ -181,6 +181,8 @@ json::Value AcquisitionReader::palm_estimator(uintptr_t address) {
         bool valid = true;
         for (size_t i = 0; i < 7; ++i)
             valid = valid && std::isfinite(load<double>(latest, 0x20 + i * 8));
+        if (valid && include_pose)
+            json_object_object_add(result.get(), "pose", doubles(latest, 0x20, 7));
         json_object_object_add(result.get(), "latest_pose_finite", json_object_new_boolean(valid));
         json_object_object_add(result.get(), "covariance_diagonal_raw", doubles(latest, 0x60, 6));
         if (bytes(end - 0x3a0, 0x90) != latest)
@@ -190,7 +192,8 @@ json::Value AcquisitionReader::palm_estimator(uintptr_t address) {
         throw std::invalid_argument("palm estimator changed during read");
     return result;
 }
-json::Value AcquisitionReader::snapshot(std::optional<uintptr_t> wrapper_override) {
+json::Value AcquisitionReader::snapshot(std::optional<uintptr_t> wrapper_override,
+                                        bool hands_only) {
     const auto app = pointer(AppGlobal);
     if (!app || pointer(app) != AppVtable)
         throw std::invalid_argument("XRService app identity mismatch");
@@ -205,6 +208,35 @@ json::Value AcquisitionReader::snapshot(std::optional<uintptr_t> wrapper_overrid
     json::Value result(json_object_new_object());
     json_object_object_add(result.get(), "raw_time", finite(raw_time_()));
     json_object_object_add(result.get(), "classic_present", json_object_new_boolean(bool(classic)));
+    const auto read_palms = [&] {
+        auto palms = json_object_new_array_ext(2);
+        json_object_object_add(result.get(), "palm_estimators_raw", palms);
+        for (unsigned side = 0; side < 2; ++side) {
+            auto palm = palm_estimator(at(classic, 0x3c0 + side * 0x350), hands_only);
+            if (hands_only) {
+                json::Value row(json_object_new_object());
+                for (const auto key : {"accepted", "latest_time", "pose"})
+                    if (auto field = json::find(palm.get(), key))
+                        json_object_object_add(row.get(), key, json_object_get(field));
+                palm = std::move(row);
+            } else {
+                json_object_object_add(palm.get(), "side_index", json_object_new_int(side));
+            }
+            json_object_array_add(palms, palm.release());
+        }
+    };
+    const auto verify_tracker = [&] {
+        if (pointer(AppGlobal) != app || pointer(at(app, 0x1970)) != stock_wrapper ||
+            pointer(wrapper) != manager || pointer(at(manager, 0x2b0)) != classic)
+            throw std::invalid_argument("native tracker changed during read");
+    };
+    if (hands_only) {
+        if (classic && manager)
+            read_palms();
+        if (manager)
+            verify_tracker();
+        return result;
+    }
     if (manager) {
         auto gates = json_object_new_object();
         json_object_object_add(result.get(), "manager_request_gates_raw", gates);
@@ -324,17 +356,9 @@ json::Value AcquisitionReader::snapshot(std::optional<uintptr_t> wrapper_overrid
                             .release());
             }
         }
-        auto palms = json_object_new_array_ext(2);
-        json_object_object_add(result.get(), "palm_estimators_raw", palms);
-        for (unsigned side = 0; side < 2; ++side) {
-            auto palm = palm_estimator(at(classic, 0x3c0 + side * 0x350));
-            json_object_object_add(palm.get(), "side_index", json_object_new_int(side));
-            json_object_array_add(palms, palm.release());
-        }
+        read_palms();
     }
-    if (pointer(AppGlobal) != app || pointer(at(app, 0x1970)) != stock_wrapper ||
-        pointer(wrapper) != manager || pointer(at(manager, 0x2b0)) != classic)
-        throw std::invalid_argument("native tracker changed during read");
+    verify_tracker();
     return result;
 }
 } // namespace ct::helper

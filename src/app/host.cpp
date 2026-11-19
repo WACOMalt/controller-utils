@@ -126,6 +126,14 @@ std::unique_ptr<TrackingSessionView> NativeApplicationHost::track(const Settings
             save_controller_calibration(data, value);
         });
 }
+bool NativeApplicationHost::stock_tracking_ready() {
+    for (const auto &device : runtime_.devices()) {
+        if (device.device_class == vr::TrackedDeviceClass_Controller &&
+            (!device.valid || device.tracking_result != vr::TrackingResult_Running_OK))
+            return false;
+    }
+    return true;
+}
 NativeShortcuts &NativeApplicationHost::shortcuts() {
     if (!shortcuts_) {
         auto backend = std::make_unique<OpenVrShortcutBackend>(runtime_);

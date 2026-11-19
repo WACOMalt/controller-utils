@@ -114,6 +114,7 @@ void Application::send_op(const char *op) {
     host_.send(message(op));
 }
 void Application::close_session() {
+    standby_since_.reset();
     auto closing = std::move(session_);
     if (closing)
         closing->close();
@@ -169,7 +170,7 @@ bool Application::action(json_object *event) {
         } catch (const std::exception &error) {
             recovery_error_ = error.what();
         }
-    } else if (name == "recenter" && session_) {
+    } else if (name == "recenter" && session_ && !standby_since_) {
         session_->recenter();
         send_op("hide");
     } else if (name == "acquire" && host_.recovery_active()) {
@@ -194,11 +195,16 @@ bool Application::action(json_object *event) {
     return false;
 }
 
-void Application::step(bool awake, bool connected, const std::vector<ControllerInput> &reports) {
+void Application::step(bool awake, bool connected,
+                       const std::vector<ControllerInput> &motion_reports) {
     if (!running_)
         return;
-    if (reports.size() > 256)
+    if (motion_reports.size() > 256)
         throw std::invalid_argument("controller report batch exceeded limit");
+    const std::vector<ControllerInput> empty;
+    const auto &reports = awake ? motion_reports : empty;
+    if (!awake)
+        latest_input_.reset();
     if (connected != was_connected_) {
         latest_input_.reset();
         tracking_problem_.reset();
@@ -343,12 +349,35 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
         }
     }
     try {
-        if (session_ && (!options_.tracking_enabled || !awake || !connected)) {
+        if (!awake) {
+            waking_ = waking_ || was_awake_;
+            awake_since_.reset();
+        } else if (waking_ && !awake_since_)
+            awake_since_ = monotonic_();
+        was_awake_ = awake;
+        if (!options_.tracking_enabled || restart)
+            resume_.reset();
+        const bool already_paused = standby_since_.has_value();
+        if (session_ && (!options_.tracking_enabled || !connected || (!awake && !standby_since_) ||
+                         (standby_since_ && restart))) {
             send_op("hide");
             send_op("input_off");
             ui_enabled_ = false;
-            close_session();
+            auto saved = !awake && options_.tracking_enabled && !restart ? session_->checkpoint()
+                                                                         : std::nullopt;
+            if (!awake && connected && options_.tracking_enabled && !restart &&
+                session_->pause_optics(motion_reports))
+                standby_since_ = monotonic_();
+            else
+                close_session();
+            resume_ = std::move(saved);
             tracking_problem_.reset();
+        }
+        const bool sampling_standby = standby_since_.has_value();
+        if (sampling_standby && (monotonic_() - *standby_since_ > 30 ||
+                                 (already_paused && !session_->standby_imu(motion_reports)))) {
+            host_.log("Controller Utils standby: motion stream expired");
+            close_session();
         }
         if (restart) {
             retry_ = 0;
@@ -361,23 +390,47 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
             status_ = "Waiting for gamepad. Connect it to Frame by Bluetooth.";
         else if (!awake)
             status_ = "Put Frame on to start tracking.";
-        if (options_.tracking_enabled && awake && connected && !runtime_problem_ && !session_ &&
-            monotonic_() >= retry_) {
-            session_ = host_.track(options_);
-            if (!session_)
-                throw std::runtime_error("tracking session was not created");
+        if (options_.tracking_enabled && awake && connected && !runtime_problem_ &&
+            (!session_ || standby_since_) && monotonic_() >= retry_) {
+            const double awake_for = awake_since_ ? monotonic_() - *awake_since_ : 0;
+            if (!waking_ ||
+                (awake_for >= .75 && (awake_for >= 3 || host_.stock_tracking_ready()))) {
+                if (standby_since_) {
+                    if (session_->wake_optics()) {
+                        standby_since_.reset();
+                        resume_.reset();
+                    } else if (awake_for >= 3) {
+                        host_.log("Controller Utils standby: tracking room changed or unavailable");
+                        close_session();
+                    }
+                }
+                if (!session_)
+                    session_ = host_.track(options_);
+                if (!session_)
+                    throw std::runtime_error("tracking session was not created");
+                if (!standby_since_) {
+                    waking_ = false;
+                    awake_since_.reset();
+                }
+                if (resume_ && !standby_since_) {
+                    session_->resume_from(std::move(*resume_));
+                    resume_.reset();
+                }
+            } else
+                status_ = "Waiting for Frame tracking to settle after standby.";
         }
-        const auto typing = keyboard_.update(latest_input_,
-                                             session_ && options_.tracking_enabled && awake &&
-                                                 ui_enabled_ && !capture_,
-                                             monotonic_(), raw_());
-        if (session_) {
+        const auto typing =
+            keyboard_.update(latest_input_,
+                             session_ && !standby_since_ && options_.tracking_enabled && awake &&
+                                 ui_enabled_ && !capture_,
+                             monotonic_(), raw_());
+        if (session_ && !standby_since_) {
             if (capture_) {
                 session_->guide.hold_started.reset();
                 session_->guide.last_input.reset();
             }
             session_->controls(latest_input_, ui_enabled_ && !capture_ && !typing, typing);
-            auto pose = session_->step(reports);
+            auto pose = session_->step(sampling_standby ? empty : reports);
             tracking_problem_.reset();
             if (pose)
                 host_.send(pose_message(*pose));
@@ -385,6 +438,11 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
                 host_.send(std::move(presentation));
             status_ = session_->status;
         }
+    } catch (const HeadsetAsleep &) {
+        // The raw HMD pose dropped between polls. The next tick enters normal standby.
+        send_op("hide");
+        send_op("input_off");
+        ui_enabled_ = false;
     } catch (const std::exception &error) {
         status_ = error.what();
         send_op("hide");
@@ -451,7 +509,7 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
         put(value.get(), "message", ui_text(display, 240));
         put(value.get(), "enabled", options_.tracking_enabled);
         put(value.get(), "gamepad_connected", connected);
-        const auto *input = session_ ? &session_->input_state() : nullptr;
+        const auto *input = session_ && !standby_since_ ? &session_->input_state() : nullptr;
         put(value.get(), "status_attention",
             runtime_problem_ || count ||
                 (input &&

@@ -1,5 +1,6 @@
 #pragma once
 #include "orientation.h"
+#include "hand_position.h"
 #include "position.h"
 #include <deque>
 #include <optional>
@@ -19,6 +20,15 @@ struct NativeObservation {
     Quaternion orientation, native_orientation;
     Vector3 emitter;
 };
+struct TrackingSpace {
+    uint64_t universe;
+    RigidPose raw_to_standing;
+};
+struct TrackingCheckpoint {
+    std::string serial;
+    TrackingSpace space;
+    NativeObservation pose;
+};
 struct BodyPoseMessage {
     double time, position_time;
     Vector3 position;
@@ -33,6 +43,9 @@ class NativeBodyPose {
     Vector3 bias, emitter;
     SensorClock clock;
     InertialPosition motion;
+    HandPosition hands;
+    PoseHistory measured_body;
+    double last_motion = 0;
     std::deque<std::pair<double, Vector3>> gyro;
     std::optional<Quaternion> orientation;
     std::optional<double> orientation_time;
@@ -50,9 +63,13 @@ class NativeBodyPose {
     std::optional<double> sample(const ControllerReport &imu, double received, double frame_offset,
                                  const std::optional<RigidPose> &head = std::nullopt);
     bool observe(const NativePoseInput &pose, double now);
+    void observe_hands(const std::array<double, 2> &stamps, const PalmPoints &palms, double now);
+    void reset_hands();
     void recenter();
     void alignment_ready(double now, const RigidPose &head) const;
     void align_head(double now, const RigidPose &head);
+    bool resume(const TrackingCheckpoint &saved, const TrackingSpace &space, double now,
+                const RigidPose &head);
     void apply_heading(double yaw, double now);
     std::optional<NativeObservation> strict_native(double now) const;
     std::optional<BodyPoseMessage> input_pose(double now) const;

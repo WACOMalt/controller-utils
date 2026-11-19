@@ -83,7 +83,13 @@ int main() {
             ct::test::PatchMemory memory;
             seed(memory, layout);
             AdapterPatch patch(memory, layout);
-            assert(patch.install());
+            unsigned scans = 0;
+            const auto scan = [&] { return ++scans == 1; };
+            const auto original = memory.regions;
+            assert(patch.install(scan) == PatchResult::Busy);
+            assert(scans == 1 && memory.writes == 0 && memory.regions == original);
+            assert(patch.install(scan) == PatchResult::Applied);
+            assert(scans == 2);
             assert(memory.read(AdapterPatch::Cave, layout.loader.size()) == layout.loader);
             for (const auto &site : layout.sites)
                 assert(memory.read(site.address, 4) == site.redirect);
@@ -94,7 +100,8 @@ int main() {
             assert(memory.writes == count && memory.regions == before);
             patch.restore_camera();
             memory.regions[AdapterPatch::Control][112] = 4;
-            assert(!patch.install());
+            assert(patch.install(scan) == PatchResult::Reused);
+            assert(scans == 2);
             patch.restore_camera();
             memory.regions[AdapterPatch::Control][116] = 3;
             const auto owned = memory.regions;
@@ -102,7 +109,7 @@ int main() {
             assert(memory.regions == owned);
             memory.regions[AdapterPatch::Control][116] = 0;
             memory.regions[AdapterPatch::Control][152] = 1;
-            assert(!patch.install());
+            assert(patch.install() == PatchResult::Reused);
             patch.restore_camera();
             memory.regions[AdapterPatch::Control][156] = 1;
             const auto stopped_worker = memory.regions;
@@ -118,10 +125,10 @@ int main() {
             ct::test::PatchMemory memory;
             seed(memory, layout);
             AdapterPatch patch(memory, layout);
-            assert(patch.install());
+            assert(patch.install() == PatchResult::Applied);
             patch.recover_unarmed();
             assert(memory.read(AdapterPatch::Cave, layout.loader.size()) == layout.loader);
-            assert(!patch.install());
+            assert(patch.install() == PatchResult::Reused);
         }
         {
             ct::test::PatchMemory memory;

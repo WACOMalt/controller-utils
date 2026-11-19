@@ -43,7 +43,8 @@ TrackingSession::TrackingSession(RuntimeView &runtime, std::shared_ptr<Controlle
                                  std::function<void(const TrackingCalibration &)> save_calibration)
     : runtime_(runtime), controller_(std::move(controller)), calibration_(calibration),
       save_calibration_(std::move(save_calibration)), options_(options),
-      children_(std::move(children)), monotonic_(monotonic ? std::move(monotonic) : monotonic_time),
+      children_(std::move(children)), steam_ui_(std::move(steam_ui)),
+      monotonic_(monotonic ? std::move(monotonic) : monotonic_time),
       raw_(raw ? std::move(raw) : raw_time), sleep_(sleep ? std::move(sleep) : sleep_for) {
     started_ = last_imu_ = last_health_ = monotonic_();
     try {
@@ -56,23 +57,9 @@ TrackingSession::TrackingSession(RuntimeView &runtime, std::shared_ptr<Controlle
         runtime_.queues().preflight();
         serial_ = controller_->serial();
         tracker_.emplace(new_mapper());
-        input_.emplace(static_cast<InputBackend &>(*this), serial_, monotonic_, raw_);
         device_configured_ = true;
         controller_->enable_imu();
-        update_options(options_);
-        started_ = last_imu_ = monotonic_();
-        helper_ = children_({"/usr/bin/sudo", "-n",
-                             "/var/lib/controller-utils/controller-utils-helper", "--private"});
-        if (!helper_)
-            throw std::runtime_error("Native compatibility helper could not start.");
-        try {
-            filter_ = steam_ui(serial_, false);
-            if (!filter_)
-                throw std::runtime_error("Steam input filter could not start.");
-        } catch (const std::exception &error) {
-            const auto text = std::string(error.what()).substr(0, 300);
-            input_->state.error = text.empty() ? "Steam input filter could not start." : text;
-        }
+        open_services();
     } catch (...) {
         try {
             close();
@@ -80,6 +67,23 @@ TrackingSession::TrackingSession(RuntimeView &runtime, std::shared_ptr<Controlle
             std::cerr << "Native startup cleanup: " << error.what() << '\n';
         }
         throw;
+    }
+}
+void TrackingSession::open_services() {
+    input_.emplace(static_cast<InputBackend &>(*this), serial_, monotonic_, raw_);
+    update_options(options_);
+    started_ = last_imu_ = monotonic_();
+    helper_ = children_(
+        {"/usr/bin/sudo", "-n", "/var/lib/controller-utils/controller-utils-helper", "--private"});
+    if (!helper_)
+        throw std::runtime_error("Native compatibility helper could not start.");
+    try {
+        filter_ = steam_ui_(serial_, false);
+        if (!filter_)
+            throw std::runtime_error("Steam input filter could not start.");
+    } catch (const std::exception &error) {
+        const auto text = std::string(error.what()).substr(0, 300);
+        input_->state.error = text.empty() ? "Steam input filter could not start." : text;
     }
 }
 TrackingSession::~TrackingSession() {
@@ -95,7 +99,7 @@ NativeBodyPose TrackingSession::new_mapper() const {
 }
 const InputControl::State &TrackingSession::input_state() const {
     if (!input_)
-        throw std::logic_error("Native tracking session is closed.");
+        throw std::logic_error("Native tracking input is closed.");
     return input_->state;
 }
 bool TrackingSession::has_filter() const {
@@ -146,7 +150,7 @@ void TrackingSession::update_options(const Settings &options) {
         throw std::invalid_argument("invalid smoothing_ms");
     options_ = options;
     tracker_->motion.smoothing = options.smoothing_ms / 1000.;
-    if (brightness_ != options.brightness) {
+    if (input_ && brightness_ != options.brightness) {
         controller_->enable_ir(unsigned(options.brightness));
         brightness_ = options.brightness;
     }
@@ -190,6 +194,8 @@ void TrackingSession::poll_helper(double now) {
             helper_restored_ = true;
         else if (op == "native_helper_error")
             throw std::runtime_error(message(event.get(), "Native compatibility failed.", 1000));
+        else if (op == "native_helper_palms")
+            palm_sample_ = std::move(event);
         else if (op == "native_helper_quality") {
             double stamp;
             bool good;
@@ -215,6 +221,44 @@ void TrackingSession::poll_helper(double now) {
     if (!helper_ready_ && now - started_ > 15)
         throw std::runtime_error("Native compatibility is not installed or did not become ready.");
 }
+void TrackingSession::observe_palms(double now) {
+    auto sample = std::move(*palm_sample_);
+    palm_sample_.reset();
+    const auto rows = json::find(sample.get(), "samples");
+    if (!json_object_is_type(rows, json_type_array) || json::array_size(rows) != 2 ||
+        !tracker_->native)
+        return;
+    PalmPoints palms;
+    std::array<double, 2> stamps{};
+    for (size_t i = 0; i < 2; ++i) {
+        try {
+            const auto row = json::item(rows, i);
+            if (!json::find(row, "pose") || !json::find(row, "latest_time") ||
+                !json::boolean(json::field(row, "accepted")))
+                continue;
+            const double stamp = json::number(json::field(row, "latest_time"));
+            if (stamp > now || now - stamp > .18)
+                continue;
+            const auto pose = json::numbers<7>(json::field(row, "pose"));
+            const Quaternion q{pose[0], pose[1], pose[2], pose[3]};
+            if (std::abs(dot(q, q) - 1) > .02)
+                continue;
+            const Vector3 point{pose[4], -pose[5], -pose[6]};
+            if (norm(point) > 20)
+                continue;
+            palms[i] = point;
+            stamps[i] = stamp;
+        } catch (const std::invalid_argument &) {
+            // An incomplete sample from one hand can accompany a valid sample from the other.
+        }
+    }
+    const double stamp = std::max(stamps[0], stamps[1]);
+    for (size_t i = 0; i < 2; ++i)
+        if (stamp - stamps[i] > .045)
+            palms[i].reset();
+    if (stamp > 0)
+        tracker_->observe_hands(stamps, palms, now);
+}
 void TrackingSession::recover_imu(double now) {
     const auto age = now - last_imu_;
     imu_recovering_ = age > .08;
@@ -237,7 +281,7 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
     poll_helper(received);
     const auto head = runtime_.head_pose(2);
     if (!head)
-        throw std::runtime_error("Headset asleep. Tracking will resume when worn.");
+        throw HeadsetAsleep();
     if (!native_ && helper_ready_ && received - started_ >= 2 && tracker_->clock.scale &&
         received - last_imu_ <= .15)
         native_ = std::make_unique<NativeTracking>(runtime_.queues(), controller_profile(serial_),
@@ -245,6 +289,12 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
     for (const auto &report : reports) {
         ++imu_samples_;
         const auto stamp = tracker_->sample(report.report, report.received, now - received, head);
+        if (warm_ && tracker_->rotation->imu_recoveries != standby_recoveries_) {
+            discard_warm_heading("motion stream interrupted");
+            continue;
+        }
+        if (warm_ && stamp)
+            check_parked(report.report);
         if (stamp && !calibration_.gyro_calibrated) {
             if (const auto bias = bias_calibration_.sample(report.report, *stamp)) {
                 calibration_.body.gyro_bias_report_rad_s = *bias;
@@ -280,6 +330,8 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
         if (pose)
             native_poses_ += unsigned(tracker_->observe(*pose, now));
     }
+    if (palm_sample_ && !warm_ && initial.ready && tracker_->palm_aligned && !heading_requested_)
+        observe_palms(now);
     const auto action = guide.update(input_->state.buttons, input_->state.raw_received, now);
     if (action == AlignmentAction::Restart)
         acquire();
@@ -288,9 +340,15 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
     alignment_hint_ = "Hold the gamepad still for a moment.";
     if (initial.ready && (heading_requested_ || !tracker_->palm_aligned)) {
         const bool heading = heading_requested_;
-        bool aligned = false;
+        bool aligned = false, resumed = false;
         try {
-            tracker_->align_head(now, *head);
+            if (resume_) {
+                if (const auto space = runtime_.tracking_space())
+                    resumed = tracker_->resume(*resume_, *space, now, *head);
+                resume_.reset();
+            }
+            if (!resumed)
+                tracker_->align_head(now, *head);
             aligned = true;
         } catch (const std::invalid_argument &error) {
             alignment_hint_ = error.what();
@@ -301,7 +359,9 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
             json::Value health(json_object_new_object());
             json_object_object_add(health.get(), "op", json_object_new_string("alignment_health"));
             json_object_object_add(health.get(), "mode",
-                                   json_object_new_string(heading ? "headset" : "headset_startup"));
+                                   json_object_new_string(resumed   ? "standby_resume"
+                                                          : heading ? "headset"
+                                                                    : "headset_startup"));
             json_object_object_add(health.get(), "time", json_object_new_double(now));
             json_object_object_add(health.get(), "head", json::value(*head));
             json_object_object_add(health.get(), "orientation",
@@ -322,14 +382,34 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
             diagnostic(health.get());
         }
     }
-    const bool owned = input_->poll(monotonic_(), initial.ready && tracker_->palm_aligned &&
-                                                      !heading_requested_ && bool(native_));
+    if (received - started_ >= 15)
+        parked_.reset();
+    if (warm_ && initial.ready && tracker_->strict_native(now)) {
+        if (parked_ && tracker_->motion.position &&
+            distance(parked_->native, *tracker_->motion.position) <= .06)
+            tracker_->motion.blend = InertialPosition::Blend{
+                now, subtract(parked_->display, *tracker_->motion.position), .15};
+        warm_ = false;
+        parked_.reset();
+    }
+    if (!warm_ && initial.ready && tracker_->palm_aligned && !heading_requested_ &&
+        now - last_checkpoint_ >= .1) {
+        last_checkpoint_ = now;
+        if (const auto observed = tracker_->strict_native(now)) {
+            if (const auto space = runtime_.tracking_space())
+                checkpoint_ = TrackingCheckpoint{serial_, *space, *observed};
+        }
+    }
+    const bool owned =
+        input_->poll(monotonic_(), !warm_ && initial.ready && tracker_->palm_aligned &&
+                                       !heading_requested_ && bool(native_));
     const double control_received = monotonic_();
     now = raw_();
     if (native_ && input_->state.received && -.02 <= control_received - *input_->state.received &&
         control_received - *input_->state.received <= .15 && now - last_controls_ >= .01) {
-        const auto body =
-            initial.ready && tracker_->palm_aligned ? tracker_->input_pose(now) : std::nullopt;
+        const auto body = !warm_ && initial.ready && tracker_->palm_aligned
+                              ? tracker_->input_pose(now)
+                              : std::nullopt;
         auto controls = input_->state.input.value_or(InputControls{});
         controls.activate = !input_->state.activation_confirmed;
         if (native_->controls(now, body, controls, owned && bool(body))) {
@@ -339,7 +419,9 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
     }
     input_->update_beam(monotonic_());
     const auto &s = input_->state;
-    if (imu_recovering_)
+    if (warm_)
+        status = "Restoring gamepad position. Keep its top edge visible to Frame.";
+    else if (imu_recovering_)
         status = "Restoring controller IMU reporting...";
     else if (!helper_ready_)
         status = "Waiting for native controller tracking...";
@@ -367,9 +449,11 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
         status = "Tracking continues. Waiting for native UI control.";
     else if (s.enabled && !owned && s.received && received - *s.received <= .15)
         status = "Release the gamepad buttons and pads to enable UI control.";
+    else if (tracker_->hands.recent(now))
+        status = "Tracking gamepad position from your grip.";
     else if (!tracker_->strict_native(now))
-        status = "LED out of view. Following estimated IMU movement. Menu controls wait for native "
-                 "tracking.";
+        status = "Position uncertain. Move the gamepad slightly with its top edge visible to "
+                 "Frame. Menu controls will resume when tracking recovers.";
     else
         status = "Tracking via Bluetooth and the native Frame service.";
     max_step_ms_ = std::max(max_step_ms_, (monotonic_() - received) * 1000);
@@ -400,8 +484,12 @@ std::optional<BodyPoseMessage> TrackingSession::step(const std::vector<Controlle
         last_health_ = received;
         max_step_ms_ = 0;
     }
-    const auto pose =
-        initial.ready && tracker_->palm_aligned ? tracker_->message(now) : std::nullopt;
+    auto pose =
+        initial.ready && !warm_ && tracker_->palm_aligned ? tracker_->message(now) : std::nullopt;
+    // Keep the last optical timestamp on the display-only table pose.
+    if (warm_ && parked_ && tracker_->orientation_time && now - *tracker_->orientation_time < .05)
+        pose = BodyPoseMessage{checkpoint_->pose.time, now, parked_->display,
+                               *tracker_->orientation_time, *tracker_->orientation};
     if (pose && now - last_sent_ >= .01 && pose->orientation_time > last_orientation_) {
         last_sent_ = now;
         last_orientation_ = pose->orientation_time;
@@ -413,6 +501,13 @@ void TrackingSession::acquire() {
     if (closed_)
         throw std::runtime_error("Native tracking session is closed.");
     input_->release();
+    palm_sample_.reset();
+    if (tracker_)
+        tracker_->reset_hands();
+    warm_ = false;
+    parked_.reset();
+    checkpoint_.reset();
+    resume_.reset();
     heading_requested_ = false;
     if (native_) {
         auto old = std::move(native_);
@@ -432,11 +527,122 @@ void TrackingSession::recenter() {
     if (closed_)
         throw std::runtime_error("Native tracking session is closed.");
     input_->release();
+    palm_sample_.reset();
+    if (tracker_)
+        tracker_->reset_hands();
+    warm_ = false;
+    parked_.reset();
+    checkpoint_.reset();
+    resume_.reset();
     heading_requested_ = true;
     guide.begin(raw_());
 }
+void TrackingSession::discard_warm_heading(const char *reason) {
+    warm_ = false;
+    parked_.reset();
+    checkpoint_.reset();
+    tracker_->recenter();
+    tracker_->native.reset();
+    tracker_->motion = InertialPosition(options_.smoothing_ms / 1000.);
+    std::cerr << "Controller Utils standby: " << reason << ", aligning again\n";
+}
 void TrackingSession::rebase(const RigidPose &delta) {
     validate_pose(delta);
+    palm_sample_.reset();
+    tracker_->reset_hands();
+    if (warm_ && helper_) {
+        const auto space = runtime_.tracking_space();
+        if (space && (space->universe != checkpoint_->space.universe ||
+                      space->raw_to_standing != checkpoint_->space.raw_to_standing))
+            discard_warm_heading("room origin changed during recovery");
+    }
+}
+std::optional<TrackingCheckpoint> TrackingSession::checkpoint() const {
+    if (!checkpoint_ || warm_ || heading_requested_)
+        return {};
+    const double age = raw_() - checkpoint_->pose.time;
+    return age >= -.02 && age <= .3 ? checkpoint_ : std::nullopt;
+}
+void TrackingSession::resume_from(TrackingCheckpoint saved) {
+    if (saved.serial == serial_ && raw_() - saved.pose.time <= 300)
+        resume_ = std::move(saved);
+}
+bool TrackingSession::pause_optics(const std::vector<ControllerInput> &reports) {
+    if (!checkpoint_ || raw_() - checkpoint_->pose.time > 30 || !tracker_->palm_aligned ||
+        heading_requested_ || !tracker_->rotation || !tracker_->rotation->orientation) {
+        std::cerr << "Controller Utils standby: no recent aligned room pose\n";
+        return false;
+    }
+    if (!warm_) {
+        if (!tracker_->native)
+            return false;
+        checkpoint_->pose = *tracker_->native;
+        parked_.reset();
+        const auto &still = tracker_->alignment_samples;
+        const double now = raw_();
+        if (!still.empty() && still.back().first - still.front().first >= .2 &&
+            now - still.back().first < .05 &&
+            (tracker_->strict_native(now) || tracker_->motion.stationary_anchor)) {
+            if (const auto base = tracker_->motion.value(now))
+                parked_ = ParkedPosition{*base, tracker_->hands.value(now, *base)};
+        }
+    }
+    standby_recoveries_ = tracker_->rotation->imu_recoveries;
+    if (!standby_imu(reports)) {
+        std::cerr << "Controller Utils standby: interrupted motion stream at display sleep\n";
+        return false;
+    }
+    const auto errors = close_services();
+    if (!errors.empty())
+        throw std::runtime_error("Native standby cleanup: " + errors.front());
+    controller_->restore_ir();
+    brightness_.reset();
+    guide = {};
+    initial = {};
+    warm_ = true;
+    return true;
+}
+void TrackingSession::check_parked(const ControllerReport &report) {
+    if (!parked_)
+        return;
+    const auto &tracker = *tracker_;
+    const auto force = rotate(*tracker.orientation, tracker.body_vector(report.acceleration));
+    if (norm(tracker.body_vector(subtract(report.angular_velocity, tracker.bias))) > .08 ||
+        distance(force, {0, 9.80665, 0}) > .45)
+        parked_.reset();
+}
+bool TrackingSession::standby_imu(const std::vector<ControllerInput> &reports) {
+    const double now = monotonic_(), offset = raw_() - now;
+    for (const auto &report : reports) {
+        if (tracker_->sample(report.report, report.received, offset)) {
+            last_imu_ = report.received;
+            check_parked(report.report);
+        }
+    }
+    return now - last_imu_ <= .15 && tracker_->rotation->imu_recoveries == standby_recoveries_;
+}
+bool TrackingSession::wake_optics() {
+    const auto space = runtime_.tracking_space();
+    if (!space || space->universe != checkpoint_->space.universe)
+        return false;
+    const auto from_standing = inverse_pose(space->raw_to_standing);
+    const auto &previous = checkpoint_->space.raw_to_standing;
+    const auto rotation = multiply(quaternion(from_standing), quaternion(previous));
+    if (parked_) {
+        parked_->native =
+            transform_point(from_standing, transform_point(previous, parked_->native));
+        parked_->display =
+            transform_point(from_standing, transform_point(previous, parked_->display));
+    }
+    auto &imu = *tracker_->rotation;
+    tracker_->orientation = imu.orientation = multiply(rotation, *imu.orientation);
+    imu.history = {};
+    tracker_->motion = InertialPosition(options_.smoothing_ms / 1000.);
+    tracker_->native.reset();
+    checkpoint_->space = *space;
+    resume_.reset();
+    open_services();
+    return true;
 }
 json::Value TrackingSession::presentation() {
     const double now = raw_();
@@ -454,6 +660,11 @@ json::Value TrackingSession::presentation() {
             now, "realign", "Point the gamepad where you are looking. Keep holding View + Menu.",
             hold);
     }
+    if (warm_ && parked_)
+        return json::parse(R"({"op":"tracking_feedback","active":false})");
+    if (warm_ || resume_)
+        return tracking_feedback(now, "connecting",
+                                 "Restoring gamepad tracking. Keep its top edge visible to Frame.");
     if (!helper_ready_ || !native_)
         return tracking_feedback(
             now, "connecting",
@@ -483,10 +694,10 @@ json::Value TrackingSession::presentation() {
                                  1);
     return json::parse(R"({"op":"tracking_feedback","active":false})");
 }
-void TrackingSession::close() {
-    if (closed_)
-        return;
-    closed_ = true;
+std::vector<std::string> TrackingSession::close_services() {
+    palm_sample_.reset();
+    if (tracker_)
+        tracker_->reset_hands();
     std::vector<std::string> errors;
     if (input_)
         errors = input_->release();
@@ -501,8 +712,6 @@ void TrackingSession::close() {
         collect([&] { filter_->close(); });
     if (native_)
         collect([&] { native_->close(); });
-    if (device_configured_)
-        collect([&] { controller_->restore(); });
     if (helper_)
         collect([&] {
             const auto events = helper_->close("q");
@@ -512,6 +721,24 @@ void TrackingSession::close() {
             if (helper_ready_ && !helper_restored_ && !restored(events, "native_helper_restored"))
                 errors.emplace_back("native compatibility restoration was not confirmed");
         });
+    filter_.reset();
+    native_.reset();
+    helper_.reset();
+    input_.reset();
+    helper_ready_ = helper_restored_ = false;
+    return errors;
+}
+void TrackingSession::close() {
+    if (closed_)
+        return;
+    closed_ = true;
+    auto errors = close_services();
+    try {
+        if (device_configured_)
+            controller_->restore();
+    } catch (const std::exception &error) {
+        errors.emplace_back(error.what());
+    }
     if (!errors.empty()) {
         std::string text = "Native tracking cleanup: ";
         for (const auto &error : errors) {

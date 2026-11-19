@@ -119,7 +119,7 @@ AdapterPatch::AdapterPatch(PatchMemory &memory, AdapterLayout layout)
     : memory_(memory), layout_(std::move(layout)) {
     validate(layout_);
 }
-bool AdapterPatch::install() {
+PatchResult AdapterPatch::install(const std::function<bool()> &shared_call_active) {
     const auto state = memory_.read(Control, 160);
     const bool fresh = state == Bytes(160);
     if (!fresh) {
@@ -147,6 +147,9 @@ bool AdapterPatch::install() {
         throw std::runtime_error("native loader padding is not original or this exact adapter");
     if (memory_.read(Camera, 8) != CameraPatch::Original)
         throw std::runtime_error("native camera predicate is not original");
+    // Only a fresh install redirects shared functions that may be on a thread's stack.
+    if (fresh && shared_call_active && shared_call_active())
+        return PatchResult::Busy;
     try {
         if (fresh) {
             patch_words(memory_, PatchStorage::Data, Control, initial());
@@ -163,7 +166,7 @@ bool AdapterPatch::install() {
             restore_camera();
         std::rethrow_exception(failure);
     }
-    return fresh;
+    return fresh ? PatchResult::Applied : PatchResult::Reused;
 }
 void AdapterPatch::verify_unarmed() {
     const auto state = memory_.read(Control, 160);

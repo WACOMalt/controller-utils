@@ -24,8 +24,8 @@ class AcquisitionReader {
     explicit AcquisitionReader(MemoryRead read, std::function<double()> raw_time = {});
     json::Value record(uintptr_t address);
     json::Value feature_group(uintptr_t address);
-    json::Value palm_estimator(uintptr_t address);
-    json::Value snapshot(std::optional<uintptr_t> wrapper_override = {});
+    json::Value palm_estimator(uintptr_t address, bool include_pose = false);
+    json::Value snapshot(std::optional<uintptr_t> wrapper_override = {}, bool hands_only = false);
 };
 AcquisitionQuality acquisition_quality(json_object *state);
 } // namespace ct::helper

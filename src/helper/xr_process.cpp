@@ -63,9 +63,7 @@ PatchResult XrProcess::patch(TrackerPatch action) {
         }
         if (action != TrackerPatch::Install)
             throw std::invalid_argument("unknown native tracker patch action");
-        if (shared_call_active(stopped))
-            return PatchResult::Busy;
-        return patch.install() ? PatchResult::Applied : PatchResult::Reused;
+        return patch.install([&] { return shared_call_active(stopped); });
     });
 }
 bool XrProcess::publish(const tracker::Control &state, uint64_t now) {

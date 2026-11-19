@@ -1,6 +1,7 @@
 #pragma once
 #include "bootstrap.h"
 #include "platform/json.h"
+#include "worker.h"
 #include <string>
 
 namespace ct::helper {
@@ -24,7 +25,7 @@ class AdapterPatch {
     static constexpr uintptr_t Control = 0x343ff60, Cave = 0x315abb0, Camera = CameraPatch::Address;
     static constexpr uint64_t Magic = 0x314c4f5349544343ULL;
     AdapterPatch(PatchMemory &memory, AdapterLayout layout);
-    bool install();
+    PatchResult install(const std::function<bool()> &shared_call_active = {});
     void recover_unarmed();
     void restore_camera();
 };

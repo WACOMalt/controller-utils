@@ -395,7 +395,7 @@ j::Value replay(json_object *request) {
                                          j::number(j::field(step, "received")),
                                          j::find(step, "confidence")
                                              ? j::number(j::field(step, "confidence"))
-                                             : 1));
+                                             : 1) != ct::InertialPosition::Fix::Rejected);
                 else
                     throw std::invalid_argument("unknown position operation");
                 const auto value = position.value(j::number(j::field(step, "now")));

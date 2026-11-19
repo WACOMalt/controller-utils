@@ -54,18 +54,16 @@ std::optional<double> NativeBodyPose::sample(const ControllerReport &imu, double
         clock.offset = received;
         mapped = clock.add(imu.sensor_tick, received, imu.clock_modulus);
         gyro.clear();
-        motion.time.reset();
-        motion.history.clear();
-        if (motion.velocity)
-            motion.velocity = Vector3{};
+        motion.interrupt();
+        reset_hands();
         ++imu_recoveries;
     }
     if (!mapped)
         return {};
     const double timestamp = std::min(*mapped, received) + frame_offset;
-    if (head) {
-        if (!rotation)
-            rotation.emplace(calibration, serial, emitter);
+    if (head && !rotation)
+        rotation.emplace(calibration, serial, emitter);
+    if (rotation) {
         rotation->sample(imu, received, frame_offset, head);
     }
     const auto omega = body_vector(subtract(imu.angular_velocity, bias));
@@ -95,10 +93,8 @@ std::optional<double> NativeBodyPose::sample(const ControllerReport &imu, double
     }
     if (!motion.time || timestamp > *motion.time) {
         if (motion.time && timestamp - *motion.time > .05) {
-            motion.time.reset();
-            motion.history.clear();
-            if (motion.velocity)
-                motion.velocity = Vector3{};
+            motion.interrupt();
+            reset_hands();
         }
         Vector3 force{};
         if (orientation) {
@@ -106,6 +102,8 @@ std::optional<double> NativeBodyPose::sample(const ControllerReport &imu, double
             force = {world[0], world[1] - 9.80665, world[2]};
         }
         motion.sample(timestamp, force, norm(omega));
+        if (norm(omega) >= .12 || norm(motion.acceleration) >= .35)
+            last_motion = timestamp;
     }
     return timestamp;
 }
@@ -150,6 +148,17 @@ bool NativeBodyPose::observe(const NativePoseInput &pose, double now) {
     }
     const Vector3 raw_point{point[0], -point[1], -point[2]};
     const auto body_point = subtract(raw_point, rotate(body_q, emitter));
+    if (!motion.time)
+        motion.sample(timestamp, {}, 0);
+    const auto fix = motion.observe(timestamp, body_point, now);
+    if (fix == InertialPosition::Fix::Rejected) {
+        ++rejected_poses;
+        return false;
+    }
+    if (palm_aligned)
+        measured_body.add(timestamp, rigid_pose(body_q, body_point));
+    hands.native_observed(timestamp, now, body_point, std::abs(timestamp - last_motion) <= .24,
+                          fix == InertialPosition::Fix::PalmRelocated);
     native = NativeObservation{timestamp, body_point, body_q, native_q, raw_point};
     if (!rotation) {
         double current = timestamp;
@@ -174,20 +183,48 @@ bool NativeBodyPose::observe(const NativePoseInput &pose, double now) {
         orientation = replayed;
         orientation_time = current;
     }
-    if (!motion.time)
-        motion.sample(timestamp, {}, 0);
-    if (!motion.observe(timestamp, body_point, now)) {
-        const auto previous = motion.value(now);
-        const double smoothing = motion.smoothing;
-        motion = InertialPosition(smoothing);
-        motion.sample(timestamp, {}, 0);
-        motion.observe(timestamp, body_point, now);
-        if (previous && distance(*previous, body_point) <= .25 && smoothing)
-            motion.blend = InertialPosition::Blend{now, subtract(*previous, body_point), smoothing};
-    }
     return true;
 }
+void NativeBodyPose::observe_hands(const std::array<double, 2> &stamps, const PalmPoints &palms,
+                                   double now) {
+    const double stamp = std::max(stamps[0], stamps[1]);
+    if (!palm_aligned || !native || !rotation || !orientation_time || !std::isfinite(stamp) ||
+        stamp > now || now - stamp > .18 || std::abs(*orientation_time - stamp) > .20)
+        return;
+    auto q = rotation->history.at(stamp);
+    if (!q && stamp >= *orientation_time && stamp - *orientation_time <= .02 && orientation)
+        q = rigid_pose(*orientation, {});
+    const auto base = motion.value(now);
+    if (!q || !base)
+        return;
+    if (motion.relocation && motion.relocation->palms) {
+        for (size_t i = 0; i < palms.size(); ++i) {
+            std::optional<Vector3> center;
+            if (palms[i] && std::isfinite(stamps[i]) && now - stamps[i] <= .18) {
+                const auto pose = stamps[i] == stamp ? q : rotation->history.at(stamps[i]);
+                if (pose)
+                    center = hands.grip_center(i, stamps[i], *palms[i], quaternion(*pose));
+            }
+            motion.observe_grip(i, palms[i] ? stamps[i] : stamp, center);
+        }
+    }
+    const auto past = measured_body.at(stamp);
+    std::optional<Vector3> measurement;
+    if (past)
+        measurement = translation(*past);
+    else if (std::abs(stamp - native->time) <= .045)
+        measurement = native->position;
+    hands.observe(stamp, now, palms, quaternion(*q), measurement, hands.value(now, *base),
+                  std::abs(stamp - last_motion) <= .24);
+}
+void NativeBodyPose::reset_hands() {
+    hands = {};
+    measured_body = {};
+    if (motion.relocation && motion.relocation->palms)
+        motion.relocation.reset();
+}
 void NativeBodyPose::recenter() {
+    reset_hands();
     rotation.emplace(calibration, serial, emitter);
     orientation.reset();
     orientation_time.reset();
@@ -219,6 +256,38 @@ void NativeBodyPose::align_head(double now, const RigidPose &head) {
         throw std::invalid_argument("Look ahead and point the gamepad's top edge the same way.");
     apply_heading(std::atan2(head[2], head[10]) - std::atan2(backward[0], backward[2]), now);
 }
+bool NativeBodyPose::resume(const TrackingCheckpoint &saved, const TrackingSpace &space, double now,
+                            const RigidPose &head) {
+    if (saved.serial != serial || saved.space.universe != space.universe ||
+        now <= saved.pose.time || now - saved.pose.time > 300)
+        return false;
+    alignment_ready(now, head);
+    const auto standing_to_raw = inverse_pose(space.raw_to_standing);
+    const auto previous_emitter = transform_point(
+        standing_to_raw, transform_point(saved.space.raw_to_standing, saved.pose.emitter));
+    const auto previous_to_raw =
+        multiply(quaternion(standing_to_raw), quaternion(saved.space.raw_to_standing));
+    // A single LED cannot confirm yaw. Check the native orientation before restoring heading.
+    if (distance(previous_emitter, native->emitter) > .06 ||
+        std::abs(dot(multiply(previous_to_raw, saved.pose.native_orientation),
+                     native->native_orientation)) < .985)
+        return false;
+    const auto previous = multiply(previous_to_raw, saved.pose.orientation);
+    const auto previous_back = rotate(previous, {0, 0, 1});
+    const auto current_back = rotate(*rotation->orientation, {0, 0, 1});
+    const auto previous_up = rotate(conjugate(previous), {0, 1, 0});
+    const auto current_up = rotate(conjugate(*rotation->orientation), {0, 1, 0});
+    if (dot(previous_up, current_up) < .99 ||
+        std::min(std::hypot(previous_back[0], previous_back[2]),
+                 std::hypot(current_back[0], current_back[2])) < .25)
+        return false;
+    apply_heading(std::atan2(previous_back[0], previous_back[2]) -
+                      std::atan2(current_back[0], current_back[2]),
+                  now);
+    const auto previous_body = subtract(previous_emitter, rotate(previous, emitter));
+    motion.blend = InertialPosition::Blend{now, subtract(previous_body, native->position), .15};
+    return true;
+}
 void NativeBodyPose::apply_heading(double yaw, double now) {
     if (!rotation || !rotation->orientation || !native)
         throw std::logic_error("gamepad heading is not ready");
@@ -236,6 +305,7 @@ void NativeBodyPose::apply_heading(double yaw, double now) {
         motion.blend = InertialPosition::Blend{now, subtract(*previous, point), motion.smoothing};
     native->position = point;
     native->orientation = measured;
+    reset_hands();
     palm_aligned = true;
 }
 std::optional<NativeObservation> NativeBodyPose::strict_native(double now) const {
@@ -244,7 +314,13 @@ std::optional<NativeObservation> NativeBodyPose::strict_native(double now) const
     return native;
 }
 std::optional<BodyPoseMessage> NativeBodyPose::input_pose(double now) const {
-    return strict_native(now) ? message(now) : std::nullopt;
+    const auto hand_time = hands.recent(now);
+    if (!strict_native(now) && !hand_time)
+        return {};
+    auto pose = message(now);
+    if (pose && hand_time)
+        pose->time = std::max(pose->time, *hand_time);
+    return pose;
 }
 std::optional<BodyPoseMessage> NativeBodyPose::message(double now) const {
     if (!native || !orientation_time || !std::isfinite(now) || now - *orientation_time < -.02 ||
@@ -253,6 +329,7 @@ std::optional<BodyPoseMessage> NativeBodyPose::message(double now) const {
     const auto position = motion.value(now);
     if (!position)
         return {};
-    return BodyPoseMessage{native->time, now, *position, *orientation_time, *orientation};
+    return BodyPoseMessage{native->time, now, hands.value(now, *position), *orientation_time,
+                           *orientation};
 }
 } // namespace ct

@@ -240,6 +240,13 @@ void ControllerDevice::enable_ir(unsigned brightness) {
     }
     transport_->send(command);
 }
+void ControllerDevice::restore_ir() {
+    if (old_brightness) {
+        transport_->send(setting_report(0x24, *old_brightness));
+        cleanup.ir_returned_to_read_value = old_brightness;
+        old_brightness.reset();
+    }
+}
 void ControllerDevice::restore() {
     if (closed_)
         return;
@@ -252,14 +259,10 @@ void ControllerDevice::restore() {
         else
             errors.emplace_back(error.what());
     };
-    if (old_brightness) {
-        try {
-            transport_->send(setting_report(0x24, *old_brightness));
-            cleanup.ir_returned_to_read_value = old_brightness;
-            old_brightness.reset();
-        } catch (const std::exception &error) {
-            failure(error);
-        }
+    try {
+        restore_ir();
+    } catch (const std::exception &error) {
+        failure(error);
     }
     if (changed_imu) {
         try {

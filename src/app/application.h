@@ -17,6 +17,9 @@ class ApplicationHost {
     virtual void save(const Settings &options) = 0;
     virtual void autostart(bool enabled) = 0;
     virtual std::unique_ptr<TrackingSessionView> track(const Settings &options) = 0;
+    virtual bool stock_tracking_ready() {
+        return true;
+    }
     virtual void shortcut(const std::string &action) = 0;
     virtual std::optional<std::string> camera_switch_error(bool) {
         return {};
@@ -51,6 +54,9 @@ class Application {
     Settings options_;
     std::function<double()> monotonic_, raw_;
     std::unique_ptr<TrackingSessionView> session_;
+    std::optional<TrackingCheckpoint> resume_;
+    bool waking_ = false, was_awake_ = false;
+    std::optional<double> awake_since_, standby_since_;
     SteamShortcuts gestures_;
     KeyboardMode keyboard_;
     std::optional<BindingCapture> capture_;
@@ -84,8 +90,11 @@ class Application {
     bool running() const {
         return running_;
     }
+    bool keep_controller_open() const {
+        return bool(session_);
+    }
     double cadence() const {
-        return session_ ? .004 : .02;
+        return session_ && !standby_since_ ? .004 : .02;
     }
     const Settings &options() const {
         return options_;

@@ -56,6 +56,7 @@ class NativeApplicationHost final : public ApplicationHost {
     void save(const Settings &options) override;
     void autostart(bool enabled) override;
     std::unique_ptr<TrackingSessionView> track(const Settings &options) override;
+    bool stock_tracking_ready() override;
     void shortcut(const std::string &action) override;
     std::optional<std::string> camera_switch_error(bool enabled) override;
     bool system_input(bool enabled) override;

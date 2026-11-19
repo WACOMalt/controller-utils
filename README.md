@@ -10,9 +10,10 @@ tracking also works while Frame's own controllers are being tracked.
 
 ![Controller Utils running on Steam Frame](docs/controller-utils.png)
 
-Tracking relies on a single IR LED. It can become unstable or drift when the LED
-is hidden from the headset's cameras. Position tracking recovers when you hold
-the controller with the LED visible to the headset again.
+When the IR LED is briefly hidden, tracking can use a visible hand that Frame
+has already seen move with the controller. This works with either hand. If both
+the LED and your grip are out of view, position can drift. Bring the LED back
+into view to recover.
 
 The app supports the latest stable and beta SteamOS releases.
 Since the driver interfaces directly with Frame's native tracking services,

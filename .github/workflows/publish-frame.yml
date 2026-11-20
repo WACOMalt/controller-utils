@@ -38,6 +38,9 @@ jobs:
           test "$RELEASE_TAG" = "v$version"
           python3 tools/frame_sdk.py build/frame-sdk
           make -j4 frame-optical build/optical_session_test build/tracked_input_test CPPFLAGS=-Ibuild/frame-sdk
+          if test "$RELEASE_TAG" = v0.3.0; then
+            make -j2 build/frame-legacy-launcher build/frame-legacy-cleanup
+          fi
           ./build/optical_session_test
           ./build/tracked_input_test
           python3 -m unittest discover -s tests -p 'test_stage_frame.py'
@@ -51,6 +54,8 @@ jobs:
       - name: Sign Frame packages
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           umask 077
           key=$(mktemp "$RUNNER_TEMP/controller-utils-signing-XXXXXXXX")
@@ -59,6 +64,11 @@ jobs:
           for channel in stable beta; do
             python3 tools/sign_frame_release.py --channel "$channel" --key "$key" dist/controller-utils-frame-"$channel"-*.tar.gz
           done
+          if test "$RELEASE_TAG" = v0.3.0; then
+            gh release download v0.2.0 --pattern 'latest.json' --pattern 'latest.sig' \
+              --pattern 'controller-utils-0.2.0-14-linuxarm64.tar.gz' --dir build/legacy-release
+            python3 tools/build_legacy_bridge.py --reference build/legacy-release --output dist --key "$key"
+          fi
       - name: Publish signed release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,4 +80,8 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false --generate-notes
           fi
           gh release upload "$RELEASE_TAG" dist/* --clobber
-          gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          if test "$RELEASE_TAG" = v0.3.0; then
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          fi

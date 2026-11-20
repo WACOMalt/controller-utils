@@ -168,3 +168,17 @@ frame-optical: all build/frame-compatibility build/optical/frame_palm_inference 
 build/frame-compatibility: tools/frame_compatibility.cpp $(filter-out tools/frame_input_hook.cpp,$(FRAME_INPUT_HOOK_SOURCES)) src/steamvr/ui_gate.h
 	mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -lcrypto -o $@
+
+build/frame_update_source.h: packaging/frame_update.py
+	@mkdir -p build
+	python3 -c 'import json,pathlib; pathlib.Path("$@").write_text("static constexpr char frame_update_source[] = " + json.dumps(pathlib.Path("$<").read_text(), ensure_ascii=False) + ";\n")'
+
+build/frame_migration_policies.h: packaging/70-controller-utils.rules packaging/controller-utils-frame.conf
+	@mkdir -p build
+	python3 -c 'import json,pathlib; pathlib.Path("$@").write_text("\n".join("static constexpr char " + name + "[] = " + json.dumps(pathlib.Path(path).read_text()) + ";" for name,path in zip(("frame_udev_policy","frame_keep_policy"),"$^".split()))+"\n")'
+
+build/frame-legacy-launcher: tools/frame_legacy_launcher.cpp build/frame_update_source.h
+	$(CXX) $(CXXFLAGS) $< -o $@
+
+build/frame-legacy-cleanup: tools/frame_legacy_cleanup.cpp build/frame_migration_policies.h src/platform/linux/protected_directory.cpp src/platform/linux/files.cpp src/platform/linux/resource.cpp
+	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -lcrypto -o $@

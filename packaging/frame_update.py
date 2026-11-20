@@ -157,6 +157,23 @@ def save_status(data, channel, state, message):
             path.unlink(missing_ok=True)
 
 
+def fetch_manifest(work, key, channel, tag):
+    base = f"{RELEASES}/download/{tag}"
+    for name, maximum in zip(paths(channel), (65536, 64)):
+        download(f"{base}/{name}", work / name, maximum)
+    value = manifest(work, key, channel)
+    if tag != "v" + value["version"]:
+        raise ValueError("Update metadata does not match its release")
+    return value
+
+
+def fetch_bundle(work, value):
+    bundle = work / value["artifact"]
+    download(f"{RELEASES}/download/v{value['version']}/{bundle.name}", bundle, value["size"])
+    verify_archive(bundle, value)
+    return bundle
+
+
 def check(root, data, channel, current):
     pending = data / f"frame-update-{channel}"
     key = root / "assets/update-public.pem"
@@ -167,34 +184,18 @@ def check(root, data, channel, current):
         if tag is None:
             save_status(data, channel, "idle", "No updates have been published for this channel.")
             return
-        base = f"{RELEASES}/download/{tag}"
-        for name, maximum in zip(paths(channel), (65536, 64)):
-            download(f"{base}/{name}", work / name, maximum)
-        value = manifest(work, key, channel)
-        if tag != "v" + value["version"]:
-            raise ValueError("Update metadata does not match its release")
+        value = fetch_manifest(work, key, channel, tag)
         if not newer(value, current):
             save_status(data, channel, "idle", "You’re up to date.")
             return
-        bundle = work / value["artifact"]
-        download(f"{base}/{bundle.name}", bundle, value["size"])
-        verify_archive(bundle, value)
+        bundle = fetch_bundle(work, value)
         pending.mkdir(mode=0o700, exist_ok=True)
         for name in (bundle.name, *paths(channel)):
             os.replace(work / name, pending / name)
     save_status(data, channel, "ready", f"Version {value['version']} is ready to install.")
 
 
-def apply(root, data, channel, current):
-    pending = data / f"frame-update-{channel}"
-    if not (pending / paths(channel)[0]).is_file():
-        check(root, data, channel, current)
-        return
-    value = manifest(pending, root / "assets/update-public.pem", channel)
-    if not newer(value, current):
-        save_status(data, channel, "idle", "You’re up to date.")
-        return
-    path = pending / value["artifact"]
+def install_bundle(data, channel, value, path, mode):
     verify_archive(path, value)
     save_status(data, channel, "busy", "Installing update…")
     with tempfile.TemporaryDirectory(prefix="frame-update-", dir=data) as temp:
@@ -206,7 +207,7 @@ def apply(root, data, channel, current):
         }:
             raise ValueError("Update package does not match the signed release")
         subprocess.run(
-            [sys.executable, "-B", package / "install.py", "--unattended"],
+            [sys.executable, "-B", package / "install.py", mode],
             check=True,
             stdin=subprocess.DEVNULL,
         )
@@ -214,8 +215,34 @@ def apply(root, data, channel, current):
     save_status(data, channel, "idle", f"Installed version {value['version']}.")
 
 
+def apply(root, data, channel, current):
+    pending = data / f"frame-update-{channel}"
+    if not (pending / paths(channel)[0]).is_file():
+        check(root, data, channel, current)
+        return
+    value = manifest(pending, root / "assets/update-public.pem", channel)
+    if not newer(value, current):
+        save_status(data, channel, "idle", "You’re up to date.")
+        return
+    install_bundle(data, channel, value, pending / value["artifact"], "--unattended")
+
+
+def migrate(root, data, channel, current):
+    version = current["version"]
+    if version != "0.3.0" or current["sequence"] != 15:
+        raise ValueError("Unexpected legacy migration release")
+    save_status(data, channel, "busy", f"Downloading version {version}…")
+    with tempfile.TemporaryDirectory(prefix="frame-migration-", dir=data) as temp:
+        work = Path(temp)
+        value = fetch_manifest(work, root / "assets/update-public.pem", channel, f"v{version}")
+        if value["sequence"] != current["sequence"]:
+            raise ValueError("The migration package does not match the installed release")
+        install_bundle(data, channel, value, fetch_bundle(work, value), "--legacy-migration")
+
+
 def main():
-    root = Path(__file__).resolve().parent
+    mode = sys.argv[1]
+    root = Path(sys.argv[2]).resolve() if mode == "migrate" else Path(__file__).resolve().parent
     data = root.parent / "app-data"
     channel = ""
     try:
@@ -225,7 +252,7 @@ def main():
         if channel not in ("stable", "beta"):
             raise ValueError("Updates require SteamOS stable or beta")
         current = json.loads((root / "release.json").read_bytes())
-        operation = {"check": check, "apply": apply}[sys.argv[1]]
+        operation = {"check": check, "apply": apply, "migrate": migrate}[mode]
         with (data / "frame-update.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             operation(root, data, channel, current)

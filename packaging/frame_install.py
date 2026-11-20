@@ -28,6 +28,7 @@ RULE = Path("/etc/udev/rules.d/70-controller-utils.rules")
 KEEP = Path("/etc/atomic-update.conf.d/controller-utils-frame.conf")
 DESKTOP = Path.home() / ".local/share/applications/org.controllerutils.frame.desktop"
 DATASETS = Path.home() / ".config/openvr/config/cv/xrservice/datasets"
+PERSIST = Path("/persist")
 LEGACY_UPDATER = Path("/var/lib/controller-utils/controller-utils-updater")
 LEGACY_UNIT = "controller-utils-update.service"
 LEGACY_UNIT_TEXT = """[Unit]
@@ -117,6 +118,15 @@ def calibration(source, package=None):
                 "-B",
                 package / "app/optical/frame_camera_calibration.py",
                 latest,
+                capture=True,
+            ).stdout.encode()
+        elif (PERSIST / "xrservice.json").is_file() and (PERSIST / "device_config.json").is_file():
+            contents = command(
+                sys.executable,
+                "-B",
+                package / "app/optical/frame_camera_calibration.py",
+                "--factory",
+                PERSIST,
                 capture=True,
             ).stdout.encode()
     if contents is None:
@@ -214,15 +224,24 @@ def legacy_installation():
     return True
 
 
-def retire_legacy(sources, receipt):
+def retire_legacy(sources, receipt, migrate=False, missing=()):
     stop_services()
     try:
-        command("sudo", str(LEGACY_UPDATER), "--uninstall")
-        if not policy_present(RULE, sources[RULE]):
-            command("sudo", "install", "-m", "0644", sources[RULE], RULE)
-            reload_rules()
+        if migrate:
+            command("sudo", "-n", str(LEGACY_UPDATER), "--confirm")
+            if not all(policy_present(path, source) for path, source in sources.items()):
+                raise RuntimeError("Legacy migration did not install the Frame policies")
+            created = {RULE.name, *(path.name for path in missing)}
+        else:
+            command("sudo", str(LEGACY_UPDATER), "--uninstall")
+            created = set()
+            if not policy_present(RULE, sources[RULE]):
+                command("sudo", "install", "-m", "0644", sources[RULE], RULE)
+                reload_rules()
+                created.add(RULE.name)
+        if created:
             owned = set(json.loads(receipt.read_text())) if receipt.is_file() else set()
-            atomic_text(receipt, json.dumps(sorted(owned | {RULE.name})), 0o600)
+            atomic_text(receipt, json.dumps(sorted(owned | created)), 0o600)
     finally:
         start_services()
     ready()
@@ -276,7 +295,7 @@ def service_files():
     )
 
 
-def install(package, camera_config, unattended=False):
+def install(package, camera_config, unattended=False, migrate=False):
     data, app = BASE / "app-data", BASE / "app"
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (data / "frame-install.lock").open("a") as lock:
@@ -285,9 +304,17 @@ def install(package, camera_config, unattended=False):
         sources = policy_sources(package)
         legacy = legacy_installation()
         missing = [path for path, source in sources.items() if not policy_present(path, source)]
+        if migrate and (
+            not legacy
+            or command(
+                "sudo", "-n", str(LEGACY_UPDATER), "--repair-status", capture=True
+            ).stdout.strip()
+            != "controller-utils-frame-migration-v1"
+        ):
+            raise ValueError("The signed legacy migration authorization is unavailable.")
         if unattended and (legacy or missing):
             raise ValueError("This upgrade needs administrator authorization. Run install.py.")
-        if legacy or missing:
+        if not migrate and (legacy or missing):
             command("sudo", "-v")
         driver = BASE / "native-driver"
         if (driver.exists() or driver.is_symlink()) and (
@@ -347,7 +374,7 @@ def install(package, camera_config, unattended=False):
             systemctl("daemon-reload")
             start_services()
             ready()
-            for path in missing:
+            for path in () if migrate else missing:
                 command("sudo", "install", "-m", "0644", sources[path], path)
                 created_policies.append(path)
             if RULE in created_policies:
@@ -383,7 +410,7 @@ def install(package, camera_config, unattended=False):
                 start_services()
             raise
         if legacy:
-            retire_legacy(sources, receipt)
+            retire_legacy(sources, receipt, migrate, missing)
         old_unit = UNITS / LEGACY_UNIT
         if (
             not old_unit.is_symlink()
@@ -469,6 +496,7 @@ def main():
     action.add_argument("--check", action="store_true", help="Check the Frame without installing")
     action.add_argument("--uninstall", action="store_true", help="Remove Controller Utils")
     action.add_argument("--unattended", action="store_true", help=argparse.SUPPRESS)
+    action.add_argument("--legacy-migration", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if os.geteuid() == 0:
         raise ValueError("Run this installer as the Steam Frame user")
@@ -506,7 +534,7 @@ def main():
     if args.check:
         print(f"Frame {channel} package preflight passed")
     else:
-        install(package, camera_config, args.unattended)
+        install(package, camera_config, args.unattended, args.legacy_migration)
 
 
 if __name__ == "__main__":

@@ -21,22 +21,25 @@ Unpack the ARM64 package for your SteamOS channel. Run the installer as the
 `steamos` user over SSH so it can finish while Steam and SteamVR restart.
 
 ```sh
-python3 install.py --check --calibration /path/to/camera-calibration.json
-python3 install.py --calibration /path/to/camera-calibration.json
+python3 install.py --check
+python3 install.py
 ```
 
-The installer reuses this headset's saved camera calibration when available.
-For a new profile, run `python3 app/optical/frame_camera_calibration.py` with an
-existing factory-calibration snapshot directory and save its output to a JSON
-file. Tracking does not start a camera recording. Fresh setups may ask for
+The installer reuses saved camera calibration or reads factory calibration
+from the headset. Use `--calibration /path/to/camera-calibration.json` to supply
+a file. Tracking does not start a camera recording. Fresh setups may ask for
 administrator access to install the Steam Controller udev rule and keep it
 across SteamOS updates.
 
-To upgrade the published v0.2.0 Valve IR release, run the installer above over
-SSH and authorize its one-time administrator prompt. It validates the new
-package before using the original uninstaller to retire the old privileged
-services and rules. Settings and controller calibration stay in `app-data`.
-The installer can reuse a factory-calibration snapshot already on the headset.
+With automatic updates enabled, the published v0.2.0 release downloads the
+signed transition on supported stable and beta builds. It installs v0.3.0
+when SteamVR restarts and Controller Utils starts. The update retires the old
+services and sudo rules without prompting for administrator access. Settings
+and controller calibration stay in `app-data`.
+
+If v0.2.0 rejects the update after a SteamOS change, run the installer above
+over SSH and approve its one-time administrator prompt. This covers older
+SteamOS builds whose XRService fingerprint differs from the migration feed.
 
 Pair the controller with Frame, then open Controller Utils from the app drawer (+).
 The app can start with SteamVR after its first launch. Change this in App settings.

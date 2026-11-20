@@ -256,7 +256,28 @@ class FramePackageTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "original Controller Utils uninstaller"):
                     detect()
 
-    def test_upgrade_from_legacy_preserves_settings_and_retires_old_services(self):
+    def test_factory_calibration_uses_the_serial_and_pixel_convention(self):
+        factory = runpy.run_path(str(ROOT / "tools/frame_camera_calibration.py"))["factory"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "device_config.json").write_text('{"device_serial_number":"HEADSET"}')
+            rig = {
+                "metadata": {"device_serial": "HEADSET", "pixel_coordinates_convention": "integer"},
+                "cameras": [
+                    {
+                        "sourceCamera": "slam_left",
+                        "serial": "CAMERA",
+                        "intrinsics": [{"cameraModel": "kb", "cx": 120, "cy": 100}],
+                    }
+                ],
+            }
+            (root / "xrservice.json").write_text(json.dumps(rig))
+            value = factory(root)
+            self.assertEqual(value["rig"]["metadata"]["pixel_coordinates_convention"], "float")
+            self.assertEqual(value["rig"]["cameras"][0]["intrinsics"], {"cx": 120.5, "cy": 100.5})
+            self.assertEqual(value["metadata"]["cameras"]["slam_left"]["serialNumber"], "CAMERA")
+
+    def exercise_legacy_upgrade(self, migrate):
         install = runpy.run_path(str(ROOT / "packaging/frame_install.py"))["install"]
         code = install.__globals__
         with tempfile.TemporaryDirectory() as directory:
@@ -283,10 +304,16 @@ class FramePackageTest(unittest.TestCase):
 
             def command(*args, **kwargs):
                 calls.append(args)
+                if args[-1] == "--repair-status":
+                    return SimpleNamespace(
+                        returncode=0, stdout="controller-utils-frame-migration-v1"
+                    )
                 if args[:2] == ("sudo", "install"):
                     args[-1].write_bytes(args[-2].read_bytes())
                 if args == ("sudo", str(code["LEGACY_UPDATER"]), "--uninstall"):
                     rule.unlink()
+                if args == ("sudo", "-n", str(code["LEGACY_UPDATER"]), "--confirm"):
+                    keep.write_bytes((package / keep.name).read_bytes())
                 return SimpleNamespace(returncode=0)
 
             with patch.dict(
@@ -305,11 +332,22 @@ class FramePackageTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "administrator authorization"):
                     install(package, "calibration", unattended=True)
                 self.assertFalse(calls)
-                install(package, "calibration")
-            retire = ("sudo", str(code["LEGACY_UPDATER"]), "--uninstall")
+                install(package, "calibration", migrate=migrate)
+            updater = str(code["LEGACY_UPDATER"])
+            retire = (
+                ("sudo", "-n", updater, "--confirm")
+                if migrate
+                else ("sudo", updater, "--uninstall")
+            )
+            self.assertEqual(("sudo", "-v") in calls, not migrate)
             self.assertLess(calls.index(("ready",)), calls.index(retire))
             self.assertTrue(rule.is_file() and keep.is_file())
             self.assertFalse(unit.exists())
             self.assertEqual((base / "app/controller-utils").read_text(), "new app")
             self.assertEqual(settings.read_text(), '{"automatic_updates":false}')
             self.assertEqual((data / "camera-calibration.json").read_text(), "calibration")
+
+    def test_upgrade_from_legacy_preserves_settings_and_retires_old_services(self):
+        for migrate in (False, True):
+            with self.subTest(migrate=migrate):
+                self.exercise_legacy_upgrade(migrate)

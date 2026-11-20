@@ -37,14 +37,14 @@ class FrameUpdateTest(unittest.TestCase):
         self.current = {"version": "0.2.0", "sequence": 14, "platform": "linuxarm64"}
         self.data.joinpath("calibration").write_text("preserve this")
 
-    def sign(self, channel):
+    def sign(self, channel, mode="--unattended"):
         filename = UPDATER["artifact"](channel, self.release["version"])
         package = self.work / filename.removesuffix("-linuxarm64.tar.gz")
         (package / "app").mkdir(parents=True)
         (package / "app/release.json").write_text(json.dumps(self.release))
         (package / "install.py").write_text(
             "import sys\nfrom pathlib import Path\n"
-            "assert sys.argv[1:] == ['--unattended']\n"
+            f"assert sys.argv[1:] == [{mode!r}]\n"
             f"Path({str(self.marker)!r}).touch()\n"
         )
         archive = self.feed / filename
@@ -130,6 +130,20 @@ class FrameUpdateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "checksum"):
             UPDATER["verify_archive"](archive, value)
         self.assertFalse(self.marker.exists())
+
+    def test_legacy_bridge_installs_its_pinned_release(self):
+        self.sign("beta", "--legacy-migration")
+
+        def download(url, path, maximum):
+            self.assertIn("/download/v0.3.0/", url)
+            content = (self.feed / path.name).read_bytes()
+            self.assertLessEqual(len(content), maximum)
+            path.write_bytes(content)
+
+        with patch.dict(UPDATER["migrate"].__globals__, download=download):
+            UPDATER["migrate"](self.root, self.data, "beta", self.release)
+        self.assertTrue(self.marker.exists())
+        self.assertEqual((self.data / "calibration").read_text(), "preserve this")
 
     def test_archive_cannot_write_outside_its_directory(self):
         archive = self.work / "invalid.tar.gz"

@@ -361,6 +361,8 @@ def bootstrap(arguments):
         or frame_setting("tracked-variant") != "vr"
     ):
         raise ValueError("Run setup as the Steam Frame user")
+    os.environ["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+    os.environ.pop("DBUS_SESSION_BUS_ADDRESS", None)
     channel = frame_channel()
     base = Path.home() / ".local/share/controller-utils"
     tag = None

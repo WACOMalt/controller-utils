@@ -27,7 +27,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             g++ make pkg-config libegl1-mesa-dev libgl1-mesa-dev libegl-mesa0 libgl1-mesa-dri \
             libjson-c-dev libssl-dev libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev libboost-dev libsystemd-dev \
-            fonts-noto-core nodejs
+            fonts-noto-core nodejs desktop-file-utils
           python -m pip install --requirement requirements-dev.txt
       - name: Check formatting and lint
         run: make check-format

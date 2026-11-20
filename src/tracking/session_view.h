@@ -17,8 +17,8 @@ struct TrackingInputState {
 
 struct TrackingResume {
     std::string headset_serial, controller_serial;
-    Vector3 led;
-    Quaternion orientation;
+    Vector3 led, up;
+    BodyPoseMessage pose;
 };
 
 class TrackingSessionView {

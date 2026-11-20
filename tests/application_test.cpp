@@ -42,7 +42,7 @@ int main() {
         app_replay::Host host;
         auto current = j::parse("{}");
         host.current = current.get();
-        host.checkpoint = ct::TrackingResume{"HEADSET", "CONTROLLER", {0, 1, -.4}, {1, 0, 0, 0}};
+        host.checkpoint = ct::TrackingResume{"HEADSET", "CONTROLLER", {0, 1, -.4}, {0, 1, 0}, {}};
         ct::Application app(
             host, {}, true, [&] { return host.now; }, [&] { return host.now + 1000; });
         app.step(true, true, {});

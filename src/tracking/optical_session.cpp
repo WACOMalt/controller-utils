@@ -291,26 +291,58 @@ void OpticalSession::observation(json_object *event, double now) {
     }
 }
 void OpticalSession::check_resume(double time, const Vector3 &led, const Quaternion &orientation) {
-    const auto up = rotate(conjugate(orientation), {0, 1, 0});
-    const auto saved_up = rotate(conjugate(resume->orientation), {0, 1, 0});
-    if (distance(led, resume->led) > .15 || dot(up, saved_up) < .94) {
+    if (distance(led, resume->led) > .15) {
         resume.reset();
         return;
     }
+    if (!resume_still_since)
+        return;
     if (resume_seen && time > resume_seen && time - resume_seen <= .15) {
         send_command("resume");
-        alignment = multiply(resume->orientation, conjugate(orientation));
+        alignment = multiply(resume->pose.orientation, conjugate(orientation));
         resume.reset();
     } else
         resume_seen = time;
 }
+void OpticalSession::observe_motion(const ControllerReport &report) {
+    const auto acceleration = imu.body_vector(report.acceleration);
+    const double gravity = norm(acceleration);
+    const double angular = norm(subtract(report.angular_velocity, imu.bias));
+    const bool quiet = angular < .15 && std::abs(gravity - 9.80665) < .8;
+    if (quiet)
+        last_up = scale(acceleration, 1 / gravity);
+    if (!resume)
+        return;
+    if (angular > .65 || (resume_still_since && std::abs(gravity - 9.80665) > 1.8) ||
+        (quiet && dot(*last_up, resume->up) < .94)) {
+        resume.reset();
+    } else if (!quiet) {
+        resume_still_since = 0;
+        resume_seen = 0;
+    } else if (!resume_still_since) {
+        resume_still_since = last_imu;
+    }
+}
+bool OpticalSession::showing_resume(double now) const {
+    return resume && resume_still_since && last_imu - resume_still_since >= .12 &&
+           now - last_imu < .15;
+}
 std::optional<TrackingResume> OpticalSession::checkpoint() const {
     if (resume)
         return resume;
-    if (!acquired() || !imu.orientation)
+    if (!acquired() || !imu.orientation || !imu.orientation_time)
         return {};
-    return TrackingResume{cal.headset_serial, serial, last_led,
-                          multiply(*alignment, *imu.orientation)};
+    const auto now = raw_time();
+    const auto estimated = position.value(now);
+    if (!estimated)
+        return {};
+    const auto orientation = multiply(*alignment, *imu.orientation);
+    const auto up = last_up.value_or(rotate(conjugate(orientation), {0, 1, 0}));
+    return TrackingResume{cal.headset_serial,
+                          serial,
+                          last_led,
+                          up,
+                          {fix, now, *estimated, *imu.orientation_time, orientation}};
 }
 std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<ControllerInput> &reports) {
     const double now = raw_time(), mono = monotonic_time();
@@ -328,6 +360,7 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
         imu.sample(r.report, r.received, now - mono, head, gravity_gain);
         if (imu.clock.last_tick != tick) {
             last_imu = r.received + now - mono;
+            observe_motion(r.report);
             if (!cal.gyro_calibrated) {
                 if (fix && !position.stationary)
                     gyro_calibration = {};
@@ -498,8 +531,15 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
         sent = now;
     }
     update_beam(mono);
+    if (!result && showing_resume(now)) {
+        result = resume->pose;
+        result->position_time = now;
+        result->orientation_time = last_imu;
+    }
     if (!source_ready)
         status = "Waiting for a live tracking-camera provider.";
+    else if (resume && result)
+        status = "Showing the last known gamepad position.";
     else
         status = result
                      ? (now - fix > .15 ? "Using motion sensors between stereo LED fixes."
@@ -525,7 +565,7 @@ json::Value OpticalSession::presentation() {
         return tracking_feedback(now, "palm",
                                  "Restarting tracking. Hold the gamepad normally where the "
                                  "cameras can see it.");
-    if (!fix)
+    if (!fix && !showing_resume(now))
         return tracking_feedback(now, lit && !resume ? "palm" : "connecting", status);
     if (guide.completed && now - *guide.completed < 2)
         return tracking_feedback(now, "ready", "Gamepad aligned.", 1);

@@ -1,12 +1,35 @@
 #pragma once
+#include <cstdint>
+#include <variant>
+#include <vector>
 #include "steam_ui_transport.h"
-#include "interaction/input_control.h"
 #include "platform/curl.h"
 #include <condition_variable>
 #include <mutex>
 #include <thread>
 
 namespace ct {
+struct FilterRequest {
+    bool enabled = false;
+    bool details = false, typing = false;
+    uint8_t touches = 0;
+    bool held = false;
+    bool system_only = false;
+    uint32_t tap = 0;
+};
+struct FilterState {
+    bool active;
+    int index;
+    std::string serial;
+    double time;
+    std::string keyboard_health = "off";
+    std::string keyboard_overlay = {};
+};
+struct FilterError {
+    std::string message;
+};
+using FilterEvent = std::variant<FilterState, FilterError>;
+
 class SteamUiSession {
   public:
     virtual ~SteamUiSession() = default;

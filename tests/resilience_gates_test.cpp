@@ -1,4 +1,4 @@
-#include "helper/patch.h"
+#include "steamvr/ui_gate.h"
 #include "steamvr/code.h"
 #include "steamvr/image.h"
 #include <cassert>
@@ -8,8 +8,9 @@
 #include <stdexcept>
 #include <string>
 
-namespace ct::helper {
-GateLayout resolve_gate_reviewed(GateKind, const std::string &, const char *, unsigned = 11);
+namespace ct::steamvr {
+GateLayout resolve_gate_reviewed(GateKind, const std::string &, const char *, unsigned = 11,
+                                 const char * = nullptr);
 }
 
 namespace {
@@ -17,7 +18,7 @@ template <class T> void put(std::string &data, size_t offset, const T &value) {
     std::memcpy(data.data() + offset, &value, sizeof(value));
 }
 std::string image(size_t window, size_t plt_size = 0x40,
-                  ct::helper::GateKind kind = ct::helper::GateKind::Input) {
+                  ct::steamvr::GateKind kind = ct::steamvr::GateKind::Input) {
     std::string data(0x3200, '\0');
     Elf64_Ehdr h{};
     std::memcpy(h.e_ident, ELFMAG, SELFMAG);
@@ -39,7 +40,7 @@ std::string image(size_t window, size_t plt_size = 0x40,
     Elf64_Phdr p{};
     p.p_type = PT_LOAD;
     p.p_flags = PF_R | PF_X;
-    p.p_filesz = p.p_memsz = kind == ct::helper::GateKind::Beam ? 0x2801 : 0x3000;
+    p.p_filesz = p.p_memsz = kind == ct::steamvr::GateKind::Beam ? 0x2801 : 0x3000;
     p.p_align = 4096;
     put(data, h.e_phoff, p);
     const char names[] = "\0.plt\0.text\0.shstrtab\0";
@@ -63,8 +64,8 @@ std::string image(size_t window, size_t plt_size = 0x40,
     put(data, h.e_shoff + 3 * sizeof(s), s);
     for (size_t i = 0; i < 128; i += 4)
         put(data, window + i, uint32_t(0xd503201f));
-    const auto prototype = ct::helper::place_gate(kind, 0, 0);
-    const size_t site = window + (kind == ct::helper::GateKind::Input ? 44 : 64);
+    const auto prototype = ct::steamvr::place_gate(kind, 0, 0);
+    const size_t site = window + (kind == ct::steamvr::GateKind::Input ? 44 : 64);
     std::memcpy(data.data() + site, prototype.original.data(), prototype.original.size());
     std::memcpy(data.data() + site + 4, prototype.following.data(), prototype.following.size());
     return data;
@@ -83,13 +84,14 @@ template <class F> void rejects(F fn) {
 }
 } // namespace
 int main() {
-    using namespace ct::helper;
+    using namespace ct::steamvr;
     auto first = image(0x1100);
     auto second = image(0x1400, 0x80);
     const auto signature = digest(first, 0x1100);
     rejects([&] { resolve_gate_layout(GateKind::Input, first); });
     auto a = resolve_gate_reviewed(GateKind::Input, first, signature.c_str());
-    auto b = resolve_gate_reviewed(GateKind::Input, second, signature.c_str());
+    auto b = resolve_gate_reviewed(GateKind::Input, second, "other reviewed context", 11,
+                                   signature.c_str());
     assert(a.site == 0x112c && a.cave == 0x480);
     assert(b.site == 0x142c && b.cave == 0x4c0);
     uint32_t branch;

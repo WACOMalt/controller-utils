@@ -5,6 +5,9 @@
 #include <vector>
 
 namespace ct {
+namespace {
+constexpr double optical_coast_range = .35;
+}
 void InertialPosition::sample(double timestamp, const Vector3 &force, double angular_speed) {
     if (!std::isfinite(timestamp) || !finite(force) ||
         std::any_of(force.begin(), force.end(), [](double v) { return std::abs(v) >= 100; }) ||
@@ -20,9 +23,19 @@ void InertialPosition::sample(double timestamp, const Vector3 &force, double ang
         return;
     }
     const double dt = timestamp - *time;
-    if (!(dt > 0 && dt <= .05))
+    if (dt <= 0)
         throw std::invalid_argument("inertial position sample gap");
     time = timestamp;
+    if (dt > .05) {
+        acceleration = {};
+        stationary = false;
+        history.clear();
+        if (position) {
+            velocity = Vector3{};
+            history.push_back({timestamp, {*position, *velocity}});
+        }
+        return;
+    }
     if (!observations.empty() && timestamp - observations.back().time > .25)
         stationary = false;
     const bool quiet = stationary && angular_speed < .07 && distance(force, bias) < .4;
@@ -32,25 +45,54 @@ void InertialPosition::sample(double timestamp, const Vector3 &force, double ang
     acceleration = add(acceleration, scale(subtract(subtract(force, bias), acceleration), gain));
     if (!position)
         return;
-    Vector3 applied = distance(acceleration, {}) >= .08 ? acceleration : Vector3{};
+    const auto &anchor = observations.back();
+    const double age = timestamp - anchor.time;
+    const double loss = std::clamp((age - .065) / .45, 0., 1.);
+    const double magnitude = norm(acceleration);
+    const double floor = .08 + .42 * loss;
+    Vector3 applied{};
+    if (magnitude >= floor)
+        applied = scale(acceleration, 1 - floor / magnitude);
     if (quiet) {
         velocity = Vector3{};
         applied = {};
     }
-    const double damping = timestamp - observations.back().time > .3 ? std::exp(-dt / 1.5) : 1;
+    const double damping = std::exp(-dt * loss * (norm(applied) > .15 ? 2 : 5));
     Vector3 next = scale(add(*velocity, scale(applied, dt)), damping);
     next = scale(next, 1 / std::max(1., distance(next, {}) / 2));
     position = add(*position, scale(add(*velocity, next), dt / 2));
     velocity = next;
-    const auto &anchor = observations.back().position;
-    const double separation = distance(*position, anchor);
-    if (separation > .75) {
-        position = add(anchor, scale(subtract(*position, anchor), .75 / separation));
-        velocity = Vector3{};
+    const double separation = distance(*position, anchor.position);
+    if (separation > optical_coast_range) {
+        const auto outward = scale(subtract(*position, anchor.position), 1 / separation);
+        position = add(anchor.position, scale(outward, optical_coast_range));
+        velocity = subtract(next, scale(outward, std::max(0., dot(next, outward))));
     }
     history.push_back({timestamp, {*position, *velocity}});
     if (history.size() > 512)
         history.pop_front();
+}
+void InertialPosition::correct_bearing(double timestamp, const Vector3 &origin, const Vector3 &ray,
+                                       const Vector3 &emitter, double received) {
+    const auto past = at(timestamp);
+    if (!past || timestamp - observations.back().time > .8)
+        return;
+    const auto from_camera = subtract(add(past->position, emitter), origin);
+    const double depth = dot(from_camera, ray);
+    const auto transverse = subtract(scale(ray, depth), from_camera);
+    if (depth < .07 || depth > 1.5 || norm(transverse) > .07)
+        return;
+    const auto anchor = observations.back().position;
+    const auto correction = scale(transverse, .16);
+    if (distance(add(*position, correction), anchor) > optical_coast_range)
+        return;
+    const auto old_display = *value(received);
+    for (auto &entry : history)
+        if (entry.time >= timestamp)
+            entry.state.position = add(entry.state.position, correction);
+    position = history.back().state.position;
+    blend.reset();
+    blend = Blend{received, subtract(old_display, *value(received)), std::max(.035, smoothing)};
 }
 std::optional<InertialPosition::State> InertialPosition::at(double timestamp) const {
     for (size_t i = 1; i < history.size(); ++i) {
@@ -130,7 +172,13 @@ bool InertialPosition::observe(double timestamp, const Vector3 &point, double re
     const double gain = returning || tau == 0 ? 1 : 1 - std::exp(-(timestamp - previous) / tau);
     const auto correction = scale(error, gain * confidence);
     Vector3 velocity_correction{};
-    if (confidence == 1 && span > .08) {
+    // Older optical positions lag velocity changes during short movements.
+    window.erase(window.begin(), std::find_if(window.begin(), window.end(), [&](auto *entry) {
+                     return timestamp - entry->time <= .14;
+                 }));
+    if (returning)
+        velocity_correction = scale(past->velocity, -std::min(1., norm(error) / .20));
+    if (confidence == 1 && timestamp - window.front()->time > .08) {
         double mean = 0;
         for (const auto *entry : window)
             mean += entry->time;

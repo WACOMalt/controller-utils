@@ -10,20 +10,20 @@ enum class Operation { ShowSettings, InputToggle, InputOff, Hide, Quit };
 struct KeyboardTyping {
     bool active;
 };
+struct SoftwareUpdate {
+    std::string message;
+    bool automatic, busy, ready;
+};
 struct Status {
     std::string message, pointer_label;
     bool enabled, binding_capture, steam_shortcuts, autostart, pinned;
     double brightness, smoothing;
     int pointer_buttons;
-    std::optional<bool> tracking_available, gamepad_connected, status_attention, recovery;
+    std::optional<bool> gamepad_connected, status_attention;
+    std::optional<SoftwareUpdate> update;
 };
-struct Updates {
-    std::string version, message;
-    bool automatic, configured, busy;
-};
-struct RepairStatus {
-    std::string message;
-    bool busy;
+struct AppInfo {
+    std::string version;
 };
 struct Controls {
     double time;
@@ -36,8 +36,8 @@ struct Feedback {
     std::string state, message;
     double time = 0, progress = -1;
 };
-using Command = std::variant<Operation, KeyboardTyping, Status, Updates, RepairStatus, Controls,
-                             Feedback, BodyPose>;
+using Command =
+    std::variant<Operation, KeyboardTyping, Status, AppInfo, Controls, Feedback, BodyPose>;
 std::optional<Command> command(json_object *object);
 
 struct Action {

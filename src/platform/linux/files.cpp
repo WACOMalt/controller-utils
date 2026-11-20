@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cerrno>
 #include <fcntl.h>
-#include <memory>
 #include <openssl/evp.h>
 #include <stdexcept>
 #include <system_error>
@@ -61,10 +60,6 @@ std::string read_file(const std::filesystem::path &path, size_t limit) {
     }
     return contents;
 }
-std::string sha256(const std::filesystem::path &path) {
-    auto descriptor = input_file(path);
-    return sha256(descriptor.get());
-}
 std::string read_file(int descriptor, size_t limit) {
     struct stat info{};
     if (fstat(descriptor, &info))
@@ -88,42 +83,6 @@ std::string read_file(int descriptor, size_t limit) {
         result.append(buffer.data(), size_t(count));
         offset += count;
     }
-}
-std::string sha256(int descriptor) {
-    struct stat info{};
-    if (fstat(descriptor, &info))
-        throw std::system_error(errno, std::generic_category(), "hash file identity");
-    if (!S_ISREG(info.st_mode))
-        throw std::invalid_argument("expected a regular hash input");
-    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(),
-                                                                    EVP_MD_CTX_free);
-    if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1)
-        throw std::runtime_error("cannot initialize SHA-256");
-    std::array<char, 65536> buffer;
-    off_t offset = 0;
-    for (;;) {
-        const auto count = pread(descriptor, buffer.data(), buffer.size(), offset);
-        if (count < 0 && errno == EINTR)
-            continue;
-        if (count < 0)
-            throw std::system_error(errno, std::generic_category(), "hash file read");
-        if (!count)
-            break;
-        if (EVP_DigestUpdate(context.get(), buffer.data(), size_t(count)) != 1)
-            throw std::runtime_error("cannot update SHA-256");
-        offset += count;
-    }
-    std::array<unsigned char, 32> digest{};
-    unsigned size = 0;
-    if (EVP_DigestFinal_ex(context.get(), digest.data(), &size) != 1 || size != digest.size())
-        throw std::runtime_error("cannot finalize SHA-256");
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string result;
-    for (auto byte : digest) {
-        result += digits[byte >> 4];
-        result += digits[byte & 15];
-    }
-    return result;
 }
 void atomic_write(const std::filesystem::path &path, const std::string &contents, uint32_t mode) {
     if (mode & ~0777u)

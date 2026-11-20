@@ -9,7 +9,7 @@ namespace j = ct::json;
 class Host : public ct::ApplicationHost {
     class Session final : public ct::TrackingSessionView {
         Host &host_;
-        ct::InputControl::State input_;
+        ct::TrackingInputState input_;
 
       public:
         explicit Session(Host &host) : host_(host) {
@@ -18,7 +18,10 @@ class Host : public ct::ApplicationHost {
         bool acquired() const override {
             return host_.acquisition_complete;
         }
-        const ct::InputControl::State &input_state() const override {
+        std::optional<ct::TrackingResume> checkpoint() const override {
+            return host_.checkpoint;
+        }
+        const ct::TrackingInputState &input_state() const override {
             return input_;
         }
         void controls(const std::optional<ct::ControllerInput> &input, bool enabled,
@@ -69,10 +72,10 @@ class Host : public ct::ApplicationHost {
     int index = -1;
     json_object *current = nullptr;
     j::Value trace{json_object_new_array()};
-    bool recovery_mode = false;
     bool acquisition_complete = true;
     bool keyboard_pending = false;
     bool progress_available = false;
+    std::optional<ct::TrackingResume> checkpoint, requested_resume;
     static json_object *input_json(const ct::ControllerInput &input) {
         const auto &r = input.report;
         auto result = json_object_new_object();
@@ -123,7 +126,9 @@ class Host : public ct::ApplicationHost {
     void autostart(bool enabled) override {
         record("autostart", json_object_new_boolean(enabled));
     }
-    std::unique_ptr<ct::TrackingSessionView> track(const ct::Settings &) override {
+    std::unique_ptr<ct::TrackingSessionView>
+    track(const ct::Settings &, const std::optional<ct::TrackingResume> &resume) override {
+        requested_resume = resume;
         record("track");
         return std::make_unique<Session>(*this);
     }
@@ -157,37 +162,8 @@ class Host : public ct::ApplicationHost {
         }
         return std::nullopt;
     }
-    bool recovery_active() const override {
-        return recovery_mode;
-    }
-    void open_uninstaller() override {
-        record("open_uninstaller");
-    }
-    void retry_recovery() override {
-        record("retry_recovery");
-    }
-    void check_updates() override {
-        record("check_updates");
-    }
-    void request_permission_inspection() override {
-        record("inspect_permissions");
-    }
-    void request_permission_repair() override {
-        record("repair_permissions");
-    }
-    j::Value permission_status() override {
-        return j::parse(
-            R"({"op":"repair_status","message":"Authentication required to inspect permissions.","busy":false})");
-    }
-    j::Value updates(bool automatic) override {
-        record("updates", json_object_new_boolean(automatic));
-        auto value = j::parse(
-            R"({"op":"updates","version":"0.1.0","message":"fixture","automatic":true,"configured":false,"busy":false})");
-        json_object_object_add(value.get(), "automatic", json_object_new_boolean(automatic));
-        return value;
-    }
-    void confirm_update() override {
-        record("confirm_update");
+    j::Value app_info() override {
+        return j::parse(R"({"op":"app_info","version":"0.1.0"})");
     }
     void log(const std::string &text) override {
         try {
@@ -202,12 +178,9 @@ class Host : public ct::ApplicationHost {
 inline j::Value replay(json_object *request) {
     Host host;
     auto options = ct::Settings::from_json(j::field(request, "options"));
-    std::optional<std::string> runtime_problem;
-    if (auto problem = j::find(request, "runtime_problem"))
-        runtime_problem = j::string(problem);
     ct::Application app(
-        host, options, runtime_problem, j::boolean(j::field(request, "background")),
-        [&] { return host.now; }, [&] { return host.now + 1000; });
+        host, options, j::boolean(j::field(request, "background")), [&] { return host.now; },
+        [&] { return host.now + 1000; });
     auto steps = j::field(request, "steps");
     for (size_t i = 0; i < j::array_size(steps); ++i) {
         host.index = int(i);

@@ -1,5 +1,4 @@
 #include "calibration.h"
-#include "native_pose.h"
 #include "platform/linux/files.h"
 #include "platform/linux/records.h"
 #include <algorithm>
@@ -25,7 +24,7 @@ ProtectedDirectory directory(const std::filesystem::path &data) {
 }
 void validate(const TrackingCalibration &value) {
     name(value.body.controller_serial);
-    NativeBodyPose checked(value.body, value.body.controller_serial, value.emitter);
+    OrientationFilter checked(value.body, value.body.controller_serial, value.emitter);
 }
 } // namespace
 TrackingCalibration TrackingCalibration::from_json(json_object *value) {

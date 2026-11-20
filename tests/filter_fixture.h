@@ -1,5 +1,5 @@
 #pragma once
-#include "interaction/input_control.h"
+#include "steamvr/steam_ui.h"
 #include "platform/json.h"
 
 namespace ct::test {

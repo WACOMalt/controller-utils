@@ -1,19 +1,15 @@
 #pragma once
 #include "interaction/pose_math.h"
 #include <json-c/json.h>
-#include <memory>
 #include <string>
 
 namespace ct {
 struct BodyPose {
     double optical_time = 0, position_time = 0, orientation_time = 0;
     Matrix model = identity();
-    bool raw = false;
     BodyPose in_standing(const Matrix &raw_to_standing) const {
         BodyPose result = *this;
-        if (raw)
-            result.model = multiply(raw_to_standing, model);
-        result.raw = false;
+        result.model = multiply(raw_to_standing, model);
         return result;
     }
     bool fresh(double now, double max_age = .05) const {
@@ -40,19 +36,16 @@ inline json_object *field(json_object *object, const char *key) {
     return value;
 }
 
-inline std::string parse_command(json_object *root, BodyPose &pose) {
+inline void parse_body_pose(json_object *root, BodyPose &pose) {
     if (!root || json_object_get_type(root) != json_type_object)
         throw std::runtime_error("invalid renderer JSON");
     auto operation = field(root, "op");
     if (json_object_get_type(operation) != json_type_string)
         throw std::runtime_error("invalid renderer operation");
     const std::string op = json_object_get_string(operation);
-    if ((op == "hide" || op == "quit") && json_object_object_length(root) == 1)
-        return op;
-    if ((op != "pose" && op != "native_pose") || json_object_object_length(root) != 6)
+    if (op != "native_pose" || json_object_object_length(root) != 6)
         throw std::runtime_error("unsupported renderer command");
     BodyPose next;
-    next.raw = op == "native_pose";
     next.optical_time = number(field(root, "time"));
     next.position_time = number(field(root, "position_time"));
     next.orientation_time = number(field(root, "orientation_time"));
@@ -92,22 +85,5 @@ inline std::string parse_command(json_object *root, BodyPose &pose) {
     next.model[10] = 1 - 2 * (x * x + y * y);
     (void)inverse_rigid(next.model);
     pose = next;
-    return op;
-}
-inline std::string parse_command(const std::string &line, BodyPose &pose) {
-    if (line.empty() || line.size() > 4096)
-        throw std::runtime_error("renderer command size exceeded");
-    std::unique_ptr<json_tokener, decltype(&json_tokener_free)> parser(json_tokener_new(),
-                                                                       json_tokener_free);
-    if (!parser)
-        throw std::runtime_error("cannot allocate JSON parser");
-    json_tokener_set_flags(parser.get(), JSON_TOKENER_STRICT);
-    std::unique_ptr<json_object, decltype(&json_object_put)> root(
-        json_tokener_parse_ex(parser.get(), line.data(), static_cast<int>(line.size())),
-        json_object_put);
-    if (json_tokener_get_error(parser.get()) != json_tokener_success ||
-        json_tokener_get_parse_end(parser.get()) != line.size())
-        throw std::runtime_error("invalid renderer JSON");
-    return parse_command(root.get(), pose);
 }
 } // namespace ct

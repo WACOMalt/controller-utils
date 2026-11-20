@@ -39,12 +39,11 @@ int main() {
     const auto settings = root / "data/settings.json";
     ct::atomic_write(settings, "abc");
     assert(ct::read_file(settings, 3) == "abc");
-    assert(ct::sha256_bytes("abc", 3) == ct::sha256(settings));
+    assert(ct::sha256_bytes("abc", 3) ==
+           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     assert(ct::sha256_bytes(nullptr, 0) ==
            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     rejects([] { ct::sha256_bytes(nullptr, 1); }, "invalid digest");
-    assert(ct::sha256(settings) ==
-           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     assert((std::filesystem::status(settings).permissions() & std::filesystem::perms::all) ==
            (std::filesystem::perms::owner_read | std::filesystem::perms::owner_write));
     const auto saved = root / "app/settings.json";
@@ -114,22 +113,15 @@ int main() {
     assert(module.contains(reset_address, 1, true));
     rejects([&] { ct::steamvr::Module::loaded(reset_address, "/wrong/fake_openvr.so"); });
     reset();
-    const auto incompatible = root / "drivers/cv/bin/linuxarm64/XRService";
-    ct::atomic_write(incompatible, "unsupported private queue ABI");
-    rejects([&] { ct::check_runtime(root.string()); }, "XRService changed");
-    assert(!initialized() && !shutdown());
-    assert(ct::read_file(incompatible, 100) == "unsupported private queue ABI");
     {
         ct::Runtime runtime(false, library);
         assert(initialized() == 1 && !shutdown() && type() == 3);
-        rejects([&] { runtime.queues(); }, "FnTable:IVRBlockQueue_005");
         rejects([&] { runtime.path_handle("/user/head"); }, "FnTable:IVRPaths_002");
         rejects([&] { runtime.path_handle(""); }, "empty");
         runtime.close();
         runtime.close();
         assert(shutdown() == 1);
         rejects([&] { runtime.head_pose(); }, "closed");
-        rejects([&] { runtime.queues(); }, "closed");
         rejects([&] { runtime.path_handle("/user/head"); }, "closed");
     }
     reset();

@@ -1,8 +1,8 @@
 # Controller Utils
 
 Adds support for tracking the 2026 Steam Controller on Steam Frame over Bluetooth.
-It uses Frame's native tracking services to track position through the controller's
-IR LED, and the controller's IMU for orientation.
+It uses the Frame's cameras to track the controller's IR LED and the
+controller's motion sensors to follow its movement.
 
 The app displays a 3D controller model in VR. You can navigate Steam's UI with a
 laser pointer or touchpad cursor, and type with both touchpads. Steam Controller
@@ -14,11 +14,9 @@ Tracking relies on a single IR LED. It can become unstable or drift when the LED
 is hidden from the headset's cameras. Position tracking recovers when you hold
 the controller with the LED visible to the headset again.
 
-The app supports the latest stable and beta SteamOS releases.
-Since the driver interfaces directly with Frame's native tracking services,
-SteamOS and SteamVR updates can break tracking and require an app update. I'll try
-to maintain this at least until Valve releases official tracking support for the
-Steam Controller.
+The app supports SteamOS stable and beta. SteamOS and SteamVR updates can break
+tracking and require an app update. I'll try to maintain this at least until
+Valve releases official tracking support for the Steam Controller.
 
 The app is experimental.
 
@@ -32,14 +30,13 @@ curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packa
 
 The script detects your SteamOS channel, downloads the latest release, verifies
 it and installs the app.
-Installation asks for confirmation and your password, then briefly restarts
-SteamVR. Set a password with `passwd` first if you haven't already.
+Installation asks for confirmation and may ask for your password, then briefly
+restarts Steam and SteamVR. Set a password with `passwd` first if you haven't already.
 
 Open Controller Utils from Frame's app drawer (+). Pair your gamepad with Frame,
 leave Enable tracking on and follow the headset prompts.
 
 The app starts with SteamVR after its first launch. Change this in App settings.
-For an existing installation, use updates or uninstall before installing again.
 
 ## Controls
 
@@ -69,17 +66,12 @@ pads to aim again.
 
 ## Updates and removal
 
-Enable Automatic updates in App settings to download signed GitHub releases.
-For a manual check, select Check now. Updates install when SteamVR next starts. Later updates
-and permission repairs run without another password prompt.
+Enable **Automatic updates** in App settings to download signed updates and
+install them while the Frame is idle. To update manually, select
+**Check for updates**, then **Install update** when it appears. If an older
+version can't update in the app, run the install command above.
 
-To uninstall, run:
-
-```sh
-~/.local/share/controller-utils/app/uninstall.sh
-```
-
-If an older uninstall stopped partway through, run the latest signed uninstaller:
+To uninstall, choose **Exit app**, then run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packaging/bootstrap.py | python3 - --uninstall
@@ -89,8 +81,7 @@ Removal asks for administrator access. Updates and removal keep settings and
 per-controller calibration in `~/.local/share/controller-utils/app-data`.
 
 For installations using the old `controllertracking` directory, uninstall with
-`~/.local/share/controllertracking/app/uninstall.sh`, then run the install command
-above. The installer moves the saved settings and calibration to the new directory.
+`~/.local/share/controllertracking/app/uninstall.sh`.
 
 ## Build
 

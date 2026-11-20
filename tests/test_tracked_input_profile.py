@@ -89,13 +89,14 @@ class TrackedInputProfileTest(unittest.TestCase):
 
         prefix = "/user/hand/right/input/"
         self.assertTrue(
-            {prefix + "trigger", prefix + "cursorpad"} <= paths("/actions/lasermouse", "leftclick")
+            {prefix + "trigger", prefix + "bumper"} <= paths("/actions/lasermouse", "leftclick")
         )
         self.assertTrue(
-            {prefix + "grip", prefix + "trackpad", prefix + "thumbstick"}
-            <= paths("/actions/lasermouse", "rightclick")
+            {prefix + "grip", prefix + "thumbstick"} <= paths("/actions/lasermouse", "rightclick")
         )
-        self.assertIn(prefix + "cursorpad", paths("/actions/lasermouse", "LockMousePosition"))
+        self.assertIn(prefix + "bumper", paths("/actions/lasermouse", "LockMousePosition"))
+        self.assertNotIn(prefix + "cursorpad", paths("/actions/lasermouse", "leftclick"))
+        self.assertNotIn(prefix + "trackpad", paths("/actions/lasermouse", "rightclick"))
         for mode in ("smooth", "discrete"):
             self.assertEqual(
                 paths("/actions/scroll_" + mode, "scroll"),

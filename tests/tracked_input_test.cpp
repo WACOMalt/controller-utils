@@ -193,6 +193,7 @@ int main() {
     const auto swiped = world_tip();
     assert(-swiped[8] > .05f && -swiped[9] > .05f);
     assert(cursor.input.values.at("/input/cursorpad/click") == 1);
+    assert(cursor.input.values.at("/input/bumper/click") == 1);
     cursor.state.pad_touch = false;
     cursor.pose.vecPosition[0] += .1;
     cursor.tick(31.075);
@@ -204,6 +205,7 @@ int main() {
             assert(std::abs(cursor.input.tip.m[r][c] - ct::TipCursor::offset()[c * 4 + r]) < 1e-7);
     assert(cursor.input.values.at("/input/cursorpad/touch") == 0);
     assert(cursor.input.values.at("/input/cursorpad/click") == 0);
+    assert(cursor.input.values.at("/input/bumper/click") == 0);
 
     cursor.state.scroll_touch = true;
     cursor.state.scroll_x = .2f;
@@ -224,6 +226,8 @@ int main() {
     assert(cursor.input.values.at("/input/trackpad/y") > y &&
            cursor.input.values.at("/input/trackpad/y") < .7);
     assert(cursor.input.values.at("/input/trackpad/click") == 1);
+    assert(cursor.input.values.at("/input/grip/value") == 1);
+    assert(cursor.input.values.at("/input/grip/click") == 1);
     cursor.state.enabled = false;
     cursor.tick(31.61);
     cursor.check_released();
@@ -253,6 +257,7 @@ int main() {
     assert(click.input.values.at("/input/grip/click") == 0);
     click.state.pad_click = true;
     click.tick(40.04);
+    assert(click.input.values.at("/input/bumper/click") == 1);
     click.input.fail_pose_once = true;
     click.tick(40.05);
     click.check_released();

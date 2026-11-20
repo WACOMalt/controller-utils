@@ -35,7 +35,7 @@ void lock_identity(int fd, const std::filesystem::path &path) {
     if (!S_ISREG(opened.st_mode) || opened.st_uid != getuid() || opened.st_nlink != 1 ||
         (opened.st_mode & 0022) || !S_ISREG(expected.st_mode) || opened.st_dev != expected.st_dev ||
         opened.st_ino != expected.st_ino)
-        throw std::invalid_argument("Invalid inherited Controller Utils app lock");
+        throw std::invalid_argument("Invalid Controller Utils app lock");
     const auto flags = fcntl(fd, F_GETFL);
     check(flags, "inspect application lock access");
     if ((flags & O_ACCMODE) != O_RDWR)
@@ -90,21 +90,13 @@ bool notify(int lock, const struct stat &expected) {
 }
 } // namespace
 
-ApplicationLock::ApplicationLock(const std::filesystem::path &path, std::optional<int> inherited)
+ApplicationLock::ApplicationLock(const std::filesystem::path &path)
     : path_(path), directory_(parent(path), getuid()) {
-    if (inherited) {
-        if (*inherited < 3)
-            throw std::invalid_argument("invalid inherited application lock descriptor");
-        lock_identity(*inherited, path_);
-        descriptor_.reset(*inherited);
-        check(fcntl(descriptor_.get(), F_SETFD, FD_CLOEXEC), "protect inherited application lock");
-    } else {
-        descriptor_.reset(openat(directory_.descriptor(), path.filename().c_str(),
-                                 O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600));
-        if (!descriptor_)
-            check(-1, "open application lock");
-        lock_identity(descriptor_.get(), path_);
-    }
+    descriptor_.reset(openat(directory_.descriptor(), path.filename().c_str(),
+                             O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, 0600));
+    if (!descriptor_)
+        check(-1, "open application lock");
+    lock_identity(descriptor_.get(), path_);
     if (!flock(descriptor_.get(), LOCK_EX | LOCK_NB))
         primary_ = true;
     else if (errno != EWOULDBLOCK)
@@ -136,11 +128,6 @@ void ApplicationLock::publish() {
         written += size_t(count);
     }
     check(fsync(descriptor_.get()), "flush application lock owner");
-}
-void ApplicationLock::make_inheritable() {
-    if (!primary_)
-        throw std::logic_error("application lock is not owned");
-    check(fcntl(descriptor_.get(), F_SETFD, 0), "inherit application lock");
 }
 bool ApplicationLock::show_running(const std::filesystem::path &executable, double timeout) {
     if (!std::isfinite(timeout) || timeout < 0 || timeout > 15)

@@ -33,6 +33,6 @@ class OrientationFilter {
                       const Vector3 &emitter);
     Vector3 body_vector(const Vector3 &value) const;
     void sample(const ControllerReport &imu, double received, double frame_offset,
-                const std::optional<RigidPose> &head);
+                const std::optional<RigidPose> &head, double gravity_gain = 2.);
 };
 } // namespace ct

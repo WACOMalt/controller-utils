@@ -13,16 +13,13 @@ struct Dashboard {
     ct::ui::EventSink emit;
     vr::VROverlayHandle_t panel = 0, thumbnail = 0;
     GLuint texture = 0, icon = 0;
-    bool dirty = true, submitted = false, icon_ready = false, enabled = false,
-         tracking_available = true;
-    bool gamepad_connected = false, recovery = false;
+    bool dirty = true, submitted = false, icon_ready = false, enabled = false;
+    bool gamepad_connected = false;
     bool status_attention = false;
     bool autostart = true, input_enabled = false, pinned = true, show_requested = false;
     bool capturing = false;
-    bool automatic_updates = true, updates_configured = false, update_busy = false;
-    bool repair_busy = false;
-    std::string repair_status = "Helper permissions are restored automatically.";
-    std::string app_version = "Development", update_status = "Update server is not configured.";
+    std::string app_version = "Development";
+    std::optional<ct::ui::SoftwareUpdate> update;
     std::string input_state = "Off";
     bool steam_shortcuts = true;
     std::string pointer_label = "R4";
@@ -38,7 +35,7 @@ struct Dashboard {
         const char *action;
         const char *label;
     };
-    const Button buttons[18] = {
+    const Button buttons[17] = {
         {280, 136, content_width, 96, 0, Switch, "toggle", ""},
         {280, 256, 440, 64, 0, Action, "recenter", "Realign"},
         {736, 256, 440, 64, 0, Action, "acquire", "Restart tracking"},
@@ -49,10 +46,9 @@ struct Dashboard {
         {280, 576, content_width, 96, 1, Switch, "steam_shortcuts", ""},
         {280, 136, content_width, 80, 2, Switch, "autostart", ""},
         {280, 228, content_width, 80, 2, Switch, "pinned", ""},
-        {280, 366, content_width, 80, 2, Switch, "automatic_updates", ""},
-        {960, 480, 192, 60, 2, Action, "check_updates", "Check now"},
-        {280, 636, 440, 60, 2, Action, "inspect_permissions", "Check permissions"},
-        {736, 636, 440, 60, 2, Action, "repair_permissions", "Repair permissions"},
+        {280, 372, content_width, 80, 2, Switch, "automatic_updates", ""},
+        {908, 480, 244, 60, 2, Action, "check_updates", "Check for updates"},
+        {908, 480, 244, 60, 2, Action, "apply_update", "Install update"},
         {16, 140, 224, 64, -1, Navigation, "tracking_tab", "Tracking"},
         {16, 212, 224, 64, -1, Navigation, "controls_tab", "Controls"},
         {16, 284, 224, 64, -1, Navigation, "app_tab", "App"},
@@ -125,34 +121,14 @@ struct Dashboard {
             show_requested = dirty = true;
             return true;
         }
-        if (const auto update = std::get_if<ct::ui::Updates>(&command)) {
-            dirty |= app_version != update->version || update_status != update->message ||
-                     automatic_updates != update->automatic ||
-                     updates_configured != update->configured || update_busy != update->busy;
-            app_version = update->version;
-            update_status = update->message;
-            automatic_updates = update->automatic;
-            updates_configured = update->configured;
-            update_busy = update->busy;
-            return true;
-        }
-        if (const auto repair = std::get_if<ct::ui::RepairStatus>(&command)) {
-            dirty |= repair_status != repair->message || repair_busy != repair->busy;
-            repair_status = repair->message;
-            repair_busy = repair->busy;
+        if (const auto info = std::get_if<ct::ui::AppInfo>(&command)) {
+            dirty |= app_version != info->version;
+            app_version = info->version;
             return true;
         }
         const auto next = std::get_if<ct::ui::Status>(&command);
         if (!next)
             return false;
-        if (next->recovery) {
-            dirty |= recovery != *next->recovery;
-            recovery = *next->recovery;
-        }
-        if (next->tracking_available) {
-            dirty |= tracking_available != *next->tracking_available;
-            tracking_available = *next->tracking_available;
-        }
         if (next->gamepad_connected) {
             dirty |= gamepad_connected != *next->gamepad_connected;
             gamepad_connected = *next->gamepad_connected;
@@ -180,6 +156,12 @@ struct Dashboard {
         capturing = next->binding_capture;
         dirty |= steam_shortcuts != next->steam_shortcuts;
         steam_shortcuts = next->steam_shortcuts;
+        dirty |=
+            bool(update) != bool(next->update) ||
+            (update && next->update &&
+             (update->automatic != next->update->automatic || update->busy != next->update->busy ||
+              update->ready != next->update->ready || update->message != next->update->message));
+        update = next->update;
         return true;
     }
     const char *hit(float x, float y) const {
@@ -193,20 +175,16 @@ struct Dashboard {
     }
     bool available(const Button &button) const {
         const std::string action = button.action;
-        if (action == "check_updates")
-            return updates_configured && !update_busy;
-        if (action == "inspect_permissions" || action == "repair_permissions")
-            return !repair_busy;
-        if (action == "input_toggle" && recovery)
-            return false;
-        if ((action == "acquire" || action == "recenter") && recovery)
-            return true;
         if (action == "recenter" || action == "acquire")
-            return enabled && tracking_available && gamepad_connected;
+            return enabled && gamepad_connected;
         if (action == "smoothing_down")
             return smoothing > 0;
         if (action == "smoothing_up")
             return smoothing < 150;
+        if (action == "automatic_updates")
+            return bool(update);
+        if (action == "check_updates" || action == "apply_update")
+            return update && !update->busy && update->ready == (action == "apply_update");
         return true;
     }
     const char *pointer(const vr::VREvent_t &event) {
@@ -388,13 +366,8 @@ struct Dashboard {
              21, 0x8b929a);
         if (page == 0) {
             row(c, 136, "Enable tracking", "");
-            centered(c, 280, 328, 440, 40,
-                     recovery ? "Opens the uninstaller on desktop."
-                              : "Hold [View] + [Menu] for 1 second.",
-                     19, 0x8b929a);
-            centered(c, 736, 328, 440, 40,
-                     recovery ? "Restarts SteamVR." : "Hold [View] + [Menu] for 5 seconds.", 19,
-                     0x8b929a);
+            centered(c, 280, 328, 440, 40, "Hold [View] + [Menu] for 1 second.", 19, 0x8b929a);
+            centered(c, 736, 328, 440, 40, "Hold [View] + [Menu] for 5 seconds.", 19, 0x8b929a);
             row(c, 388, "Motion smoothing", "Softens position corrections when the LED returns.",
                 96, 614);
             centered(c, 1000, 388, 94, 96, std::to_string(smoothing) + " ms", 22);
@@ -431,12 +404,12 @@ struct Dashboard {
             row(c, 136, "Run at startup", "Start Controller Utils automatically with SteamVR.", 80);
             row(c, 228, "Pin to taskbar", "Keep the controller icon in Steam's bottom bar.", 80);
             text(c, 280, 344, "SOFTWARE UPDATES", 19, 0x8b929a);
-            row(c, 366, "Automatic updates",
-                "Download automatically. Install when SteamVR next starts.", 80);
+            if (update)
+                row(c, 372, "Automatic updates", "Install updates while the Frame is idle.", 80);
             rectangle(c, content_x, 458, content_width, 104, 0x23262e);
-            pair(c, 304, 458, 632, 104, "Version " + app_version, update_status, 25, 21, 0xdcdedf,
-                 0xb8bcbf);
-            wrapped(c, 280, 591, repair_status, content_width, 2, 20);
+            pair(c, 304, 458, 580, 104, "Version " + app_version,
+                 update ? update->message : "Install a package for your SteamOS channel to update.",
+                 25, 21, 0xdcdedf, 0xb8bcbf);
         }
         rectangle(c, 256, 724, width - 256, 1, 0x3d4450);
         centered(c, 280, 724, 640, 76, "Steam Controller for Steam Frame", 20, 0x8b929a, true);
@@ -445,18 +418,20 @@ struct Dashboard {
             if (b.page != -1 && b.page != page)
                 continue;
             const std::string action = b.action;
+            if ((action == "automatic_updates" && !update) ||
+                (action == "apply_update" && (!update || !update->ready)) ||
+                (action == "check_updates" && (!update || update->ready)))
+                continue;
             const bool focus = hovered == b.action && available(b);
             if (b.kind == Switch) {
                 const bool on =
-                    action == "toggle" ? enabled
-                    : action == "autostart"
-                        ? autostart
+                    action == "toggle"      ? enabled
+                    : action == "autostart" ? autostart
+                    : action == "automatic_updates"
+                        ? update->automatic
                         : (action == "pinned"
                                ? pinned
-                               : (action == "input_toggle"
-                                      ? input_enabled
-                                      : (action == "automatic_updates" ? automatic_updates
-                                                                       : steam_shortcuts)));
+                               : (action == "input_toggle" ? input_enabled : steam_shortcuts));
                 const double cy = b.y + b.h / 2.;
                 color(c, on ? 0x1a9fff : 0x67707b);
                 cairo_new_path(c);
@@ -479,13 +454,14 @@ struct Dashboard {
                             : (selected || b.kind != Navigation ? 0x3d4450 : 0x1b2029));
             if (selected && !focus)
                 rectangle(c, b.x, b.y, 4, b.h, 0x1a9fff);
-            std::string label = recovery && action == "acquire"    ? "Retry and restart VR"
-                                : recovery && action == "recenter" ? "Uninstall"
-                                                                   : b.label;
+            std::string label = b.label;
             if (action == "pointer_binding")
                 label = capturing ? "Press a button..." : ButtonGlyphs::binding(pointer_label);
-            const double size =
-                b.kind == Step ? 30 : (action == "pointer_binding" || action == "quit" ? 21 : 24);
+            const double size = b.kind == Step ? 30
+                                               : (action == "pointer_binding" || action == "quit" ||
+                                                          action == "check_updates"
+                                                      ? 21
+                                                      : 24);
             cairo_save(c);
             cairo_rectangle(c, b.x + 12, b.y, b.w - 24, b.h);
             cairo_clip(c);

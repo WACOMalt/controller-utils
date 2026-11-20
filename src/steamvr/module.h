@@ -1,4 +1,6 @@
 #pragma once
+#include <array>
+#include <cstring>
 #include "code.h"
 #include <dlfcn.h>
 #include <link.h>
@@ -149,4 +151,17 @@ class Module {
         return code_signature(reinterpret_cast<const void *>(address), size) == signature;
     }
 };
+template <size_t N>
+std::array<uintptr_t, N> read_functions(const void *table, const Module &module) {
+    std::array<uintptr_t, N> functions{};
+    if (!table || reinterpret_cast<uintptr_t>(table) % alignof(uintptr_t) ||
+        !module.contains(table, sizeof(functions)))
+        throw std::runtime_error("OpenVR function table is unavailable");
+    std::memcpy(functions.data(), table, sizeof(functions));
+    for (const auto function : functions)
+        if (!function || !module.contains(reinterpret_cast<const void *>(function), 1, true))
+            throw std::runtime_error("OpenVR function target is unavailable");
+    return functions;
+}
+
 } // namespace ct::steamvr

@@ -52,12 +52,8 @@ std::optional<Command> command(json_object *object) {
     }
     if (op == "keyboard_typing" && fields == 2)
         return KeyboardTyping{boolean(object, "active")};
-    if (op == "repair_status")
-        return RepairStatus{text(object, "message", 240), boolean(object, "busy")};
-    if (op == "updates")
-        return Updates{text(object, "version", 32), text(object, "message", 240),
-                       boolean(object, "automatic"), boolean(object, "configured"),
-                       boolean(object, "busy")};
+    if (op == "app_info" && fields == 2)
+        return AppInfo{text(object, "version", 32)};
     if (op == "status") {
         const double light = number(field(object, "brightness"));
         const double blend = number(field(object, "smoothing_ms"));
@@ -78,16 +74,17 @@ std::optional<Command> command(json_object *object) {
                       int(binding),
                       {},
                       {},
-                      {},
                       {}};
-        for (const auto &entry : {std::pair{"tracking_available", &result.tracking_available},
-                                  std::pair{"gamepad_connected", &result.gamepad_connected},
-                                  std::pair{"status_attention", &result.status_attention},
-                                  std::pair{"recovery", &result.recovery}}) {
+        for (const auto &entry : {std::pair{"gamepad_connected", &result.gamepad_connected},
+                                  std::pair{"status_attention", &result.status_attention}}) {
             json_object *value = nullptr;
             if (json_object_object_get_ex(object, entry.first, &value))
                 *entry.second = boolean(object, entry.first);
         }
+        if (auto update = json::find(object, "update"))
+            result.update =
+                SoftwareUpdate{text(update, "message", 180), boolean(update, "automatic"),
+                               boolean(update, "busy"), boolean(update, "ready")};
         return result;
     }
     if (op == "controls") {
@@ -109,8 +106,7 @@ std::optional<Command> command(json_object *object) {
         if (result.active) {
             result.message = text(object, "message", 200);
             result.state = text(object, "state", 32);
-            if (result.state != "waiting" && result.state != "connecting" &&
-                result.state != "imu" && result.state != "palm" && result.state != "stabilizing" &&
+            if (result.state != "connecting" && result.state != "palm" &&
                 result.state != "realign" && result.state != "restart" && result.state != "ready" &&
                 result.state != "error")
                 throw std::runtime_error("unknown gamepad feedback phase");
@@ -126,9 +122,9 @@ std::optional<Command> command(json_object *object) {
         }
         return result;
     }
-    if (op == "pose" || op == "native_pose") {
+    if (op == "native_pose") {
         BodyPose pose;
-        parse_command(object, pose);
+        parse_body_pose(object, pose);
         return pose;
     }
     return {};

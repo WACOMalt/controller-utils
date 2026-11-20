@@ -79,8 +79,8 @@ json::Value Settings::to_json() const {
     json_object_object_add(result.get(), "pointer_buttons", json_object_new_int64(pointer_buttons));
     json_object_object_add(result.get(), "steam_shortcuts",
                            json_object_new_boolean(steam_shortcuts));
-    json_object_object_add(result.get(), "automatic_updates",
-                           json_object_new_boolean(automatic_updates));
+    if (!automatic_updates)
+        json_object_object_add(result.get(), "automatic_updates", json_object_new_boolean(false));
     return result;
 }
 } // namespace ct

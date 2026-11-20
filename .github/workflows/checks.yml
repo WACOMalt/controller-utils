@@ -32,7 +32,7 @@ jobs:
       - name: Check formatting and lint
         run: make check-format
       - name: Build
-        run: make -j2 all
+        run: make -j2 all build/frame-legacy-launcher build/frame-legacy-cleanup
       - name: Test
         run: make check
       - name: Check native memory and undefined behavior

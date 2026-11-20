@@ -57,6 +57,10 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          if test -z "$RELEASE_SIGNING_KEY"; then
+            echo "::error::Set RELEASE_SIGNING_KEY to the original Controller Utils signing key in the release environment."
+            exit 1
+          fi
           umask 077
           key=$(mktemp "$RUNNER_TEMP/controller-utils-signing-XXXXXXXX")
           trap 'rm -f "$key"' EXIT

@@ -22,13 +22,16 @@ OpticalSession::OpticalSession(RuntimeView &r, std::shared_ptr<ControllerDevice>
                                TrackingCalibration c, const Settings &options,
                                const std::filesystem::path &root, const ChildFactory &children,
                                const SteamUiFactory &ui,
-                               std::function<void(const TrackingCalibration &)> save)
+                               std::function<void(const TrackingCalibration &)> save,
+                               const std::optional<TrackingResume> &saved)
     : runtime(r), device(std::move(d)), cal(std::move(c)), save_calibration(std::move(save)),
       settings(options), imu(cal.body, device->serial(), cal.emitter),
       position(optical_smoothing(options)), serial(device->serial()) {
     started = last_imu = raw_time();
     if (runtime.serial(0) != cal.headset_serial || !runtime.head_pose())
         throw std::runtime_error("Put the calibrated Frame on to start tracking.");
+    if (saved && saved->headset_serial == cal.headset_serial && saved->controller_serial == serial)
+        resume = saved;
     try {
         driver.reset(socket(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0));
         sockaddr_un a{};
@@ -64,6 +67,7 @@ void OpticalSession::send_command(const char *op) {
     camera->send(msg.get());
 }
 void OpticalSession::acquire() {
+    resume.reset();
     restart_anchor = false;
     send_command("reacquire");
     guide.begin(raw_time());
@@ -189,6 +193,8 @@ void OpticalSession::observation(json_object *event, double now) {
         device->enable_imu();
         device->enable_ir(0);
         send_command("dark");
+        if (resume)
+            send_command("check_resume");
         last_imu = raw_time();
         source_ready = true;
         return;
@@ -204,6 +210,8 @@ void OpticalSession::observation(json_object *event, double now) {
     if (op != "seed" && op != "led" && op != "bearing")
         throw std::runtime_error("Unknown camera observation");
     const double t = json::number(json::field(event, "time"));
+    if (op == "seed" && fix && !guide.started)
+        return;
     if (guide.started && t < *guide.started)
         return;
     const auto head = heads.at(t);
@@ -237,17 +245,18 @@ void OpticalSession::observation(json_object *event, double now) {
             measured = world;
         }
         alignment = multiply(world, conjugate(*measured));
+        resume.reset();
         restart_anchor = bool(guide.started);
         if (!restart_anchor)
             guide.finish(now);
     } else if (op == "led")
         point = json::numbers<3>(json::field(event, "point"));
-    if (!alignment || !measured || t <= fix || now - t > .15)
+    if (!measured || t <= fix || now - t > .15)
         return;
-    const auto emitter = rotate(multiply(*alignment, *measured), cal.emitter);
     if (op == "bearing") {
-        if (!fix)
+        if (!alignment || !fix)
             return;
+        const auto emitter = rotate(multiply(*alignment, *measured), cal.emitter);
         const auto origin = json::numbers<3>(json::field(event, "origin"));
         const auto ray = json::numbers<3>(json::field(event, "direction"));
         if (finite(origin) && norm(origin) < .5 && std::abs(norm(ray) - 1) < .001)
@@ -257,7 +266,13 @@ void OpticalSession::observation(json_object *event, double now) {
     }
     if (!finite(point) || norm(point) > 1.6)
         return;
-    auto world = subtract(transform_point(*head, point), emitter);
+    const auto led = transform_point(*head, point);
+    if (resume && op == "led")
+        check_resume(t, led, *measured);
+    if (!alignment)
+        return;
+    const auto emitter = rotate(multiply(*alignment, *measured), cal.emitter);
+    const auto world = subtract(led, emitter);
     if (restart_anchor) {
         const auto estimate = position.at(t);
         const auto current = position.value(now);
@@ -268,11 +283,34 @@ void OpticalSession::observation(json_object *event, double now) {
         position.sample(std::max(t, imu.orientation_time.value_or(t)), {}, 0);
     if (position.observe(t, world, now)) {
         fix = t;
+        last_led = led;
         if (restart_anchor) {
             restart_anchor = false;
             guide.finish(now);
         }
     }
+}
+void OpticalSession::check_resume(double time, const Vector3 &led, const Quaternion &orientation) {
+    const auto up = rotate(conjugate(orientation), {0, 1, 0});
+    const auto saved_up = rotate(conjugate(resume->orientation), {0, 1, 0});
+    if (distance(led, resume->led) > .15 || dot(up, saved_up) < .94) {
+        resume.reset();
+        return;
+    }
+    if (resume_seen && time > resume_seen && time - resume_seen <= .15) {
+        send_command("resume");
+        alignment = multiply(resume->orientation, conjugate(orientation));
+        resume.reset();
+    } else
+        resume_seen = time;
+}
+std::optional<TrackingResume> OpticalSession::checkpoint() const {
+    if (resume)
+        return resume;
+    if (!acquired() || !imu.orientation)
+        return {};
+    return TrackingResume{cal.headset_serial, serial, last_led,
+                          multiply(*alignment, *imu.orientation)};
 }
 std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<ControllerInput> &reports) {
     const double now = raw_time(), mono = monotonic_time();
@@ -463,10 +501,12 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
     if (!source_ready)
         status = "Waiting for a live tracking-camera provider.";
     else
-        status =
-            result ? (now - fix > .15 ? "Using motion sensors between stereo LED fixes."
-                                      : "Tracking with Frame cameras and gamepad motion sensors.")
-                   : (lit ? "Looking for the gamepad and your hands." : "Starting Frame cameras.");
+        status = result
+                     ? (now - fix > .15 ? "Using motion sensors between stereo LED fixes."
+                                        : "Tracking with Frame cameras and gamepad motion sensors.")
+                     : (lit ? (resume ? "Looking for the gamepad where it was left."
+                                      : "Looking for the gamepad and your hands.")
+                            : "Starting Frame cameras.");
     if (!result || result->orientation_time <= last_rendered_orientation ||
         result->time < last_rendered_fix)
         return {};
@@ -486,7 +526,7 @@ json::Value OpticalSession::presentation() {
                                  "Restarting tracking. Hold the gamepad normally where the "
                                  "cameras can see it.");
     if (!fix)
-        return tracking_feedback(now, lit ? "palm" : "connecting", status);
+        return tracking_feedback(now, lit && !resume ? "palm" : "connecting", status);
     if (guide.completed && now - *guide.completed < 2)
         return tracking_feedback(now, "ready", "Gamepad aligned.", 1);
     return json::parse(R"({"op":"tracking_feedback","active":false})");

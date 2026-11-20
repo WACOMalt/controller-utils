@@ -41,7 +41,8 @@ class NativeApplicationHost final : public ApplicationHost {
     std::vector<json::Value> events() override;
     void save(const Settings &options) override;
     void autostart(bool enabled) override;
-    std::unique_ptr<TrackingSessionView> track(const Settings &options) override;
+    std::unique_ptr<TrackingSessionView>
+    track(const Settings &options, const std::optional<TrackingResume> &resume) override;
     void shortcut(const std::string &action) override;
     std::optional<std::string> camera_switch_error(bool enabled) override;
     bool system_input(bool enabled) override;

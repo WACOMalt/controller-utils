@@ -39,6 +39,7 @@ class CameraTracking:
         self.fix = None
         self.seeded = False
         self.needs_seed = True
+        self.check_resume = False
         self.first_ir = None
         self.gravity = deque(maxlen=128)
         self.priors = deque(maxlen=12)
@@ -49,12 +50,18 @@ class CameraTracking:
 
     def reacquire(self):
         self.needs_seed = True
+        self.check_resume = False
         self.scene = None
         self.reset_palm = True
 
-    def seed(self, pose):
+    def accept_alignment(self):
         self.seeded = True
         self.needs_seed = False
+        self.check_resume = False
+        self.scene = None
+
+    def seed(self, pose):
+        self.accept_alignment()
         transform = np.column_stack(
             [self.head[:, :3] @ pose.rotation, self.head[:, :3] @ pose.led + self.head[:, 3]]
         )
@@ -91,9 +98,14 @@ class CameraTracking:
                 if self.pending is not None and self.pending.done():
                     pose = self.pending.result()
                     self.pending = None
-                    if pose and not self.reset_palm and 0 <= t - pose.time < 0.45:
+                    if (
+                        pose
+                        and self.needs_seed
+                        and not self.reset_palm
+                        and 0 <= t - pose.time < 0.45
+                    ):
                         events.append(self.seed(pose))
-                if self.seeded and timely(t):
+                if (self.seeded or self.check_resume) and timely(t):
                     events.append(
                         dict(
                             op="led",
@@ -177,6 +189,10 @@ class Parent:
                     track.enabled_at = msg["time"]
                 elif op == "reacquire" and track is not None:
                     track.reacquire()
+                elif op == "check_resume" and track is not None:
+                    track.check_resume = True
+                elif op == "resume" and track is not None:
+                    track.accept_alignment()
                 else:
                     if op not in ("lit", "reacquire"):
                         raise ValueError("Unknown session message")

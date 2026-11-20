@@ -61,7 +61,8 @@ void NativeApplicationHost::save(const Settings &options) {
 void NativeApplicationHost::autostart(bool enabled) {
     registration_.autostart(enabled);
 }
-std::unique_ptr<TrackingSessionView> NativeApplicationHost::track(const Settings &options) {
+std::unique_ptr<TrackingSessionView>
+NativeApplicationHost::track(const Settings &options, const std::optional<TrackingResume> &resume) {
     auto controller = reader_.device();
     if (!controller)
         throw std::runtime_error("Connect a Steam Controller to start tracking.");
@@ -69,7 +70,7 @@ std::unique_ptr<TrackingSessionView> NativeApplicationHost::track(const Settings
         controller_calibration(data_, runtime_.serial(0), controller->serial());
     return std::make_unique<OpticalSession>(
         runtime_, controller, calibration, options, root_, children_, steam_ui_,
-        [data = data_](const auto &value) { save_controller_calibration(data, value); });
+        [data = data_](const auto &value) { save_controller_calibration(data, value); }, resume);
 }
 NativeShortcuts &NativeApplicationHost::shortcuts() {
     if (!shortcuts_) {

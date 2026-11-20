@@ -16,7 +16,8 @@ class ApplicationHost {
     virtual std::vector<json::Value> events() = 0;
     virtual void save(const Settings &options) = 0;
     virtual void autostart(bool enabled) = 0;
-    virtual std::unique_ptr<TrackingSessionView> track(const Settings &options) = 0;
+    virtual std::unique_ptr<TrackingSessionView>
+    track(const Settings &options, const std::optional<TrackingResume> &resume) = 0;
     virtual void shortcut(const std::string &action) = 0;
     virtual std::optional<std::string> camera_switch_error(bool) {
         return {};
@@ -34,6 +35,7 @@ class Application {
     Settings options_;
     std::function<double()> monotonic_, raw_;
     std::unique_ptr<TrackingSessionView> session_;
+    std::optional<TrackingResume> tracking_resume_;
     SteamShortcuts gestures_;
     KeyboardMode keyboard_;
     std::optional<BindingCapture> capture_;

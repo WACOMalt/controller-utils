@@ -9,7 +9,7 @@ int pair_fd[2]{}, gate_fd[2]{}, beam_fd[2]{};
 class Camera final : public ct::ChildChannel {
   public:
     std::vector<ct::json::Value> events;
-    bool lit = false, stopped = false, guided = false;
+    bool lit = false, stopped = false, guided = false, checking_resume = false, resumed = false;
     unsigned restarts = 0;
     std::optional<int> exit_status() override {
         return {};
@@ -21,6 +21,10 @@ class Camera final : public ct::ChildChannel {
             lit = true;
         if (op == "reacquire")
             ++restarts;
+        if (op == "check_resume")
+            checking_resume = true;
+        if (op == "resume")
+            resumed = true;
         guided |= json_object_object_get_ex(msg.get(), "prior", nullptr);
     }
     std::vector<ct::json::Value> poll() override {
@@ -30,11 +34,12 @@ class Camera final : public ct::ChildChannel {
         stopped = msg.find("stop") != std::string::npos;
         return {};
     }
-    void emit(const char *op, double time) {
+    void emit(const char *op, double time, const ct::Vector3 &point = {.1, -.2, -.5}) {
         auto msg = ct::json::parse(
             R"({"transform":[1,0,0,0.1,0,1,0,-0.2,0,0,1,-0.5],"point":[0.1,-0.2,-0.5],"origin":[0,0,0],"direction":[0.236962,-0.360397,-0.902188]})");
         json_object_object_add(msg.get(), "op", json_object_new_string(op));
         json_object_object_add(msg.get(), "time", json_object_new_double(time));
+        json_object_object_add(msg.get(), "point", ct::json::value(point));
         events.push_back(std::move(msg));
     }
 };
@@ -75,20 +80,19 @@ int main() {
     auto log = ct::json::parse("[]");
     auto *events = log.get();
     double stamp = 0;
-    ct::OpticalSession session(
-        runtime, device, cal, {}, "/test",
+    const auto make_camera =
         [&](const std::vector<std::string> &args) -> std::unique_ptr<ct::ChildChannel> {
-            assert(args.front() == "/usr/bin/python3" &&
-                   args.at(2) == "/test/optical/frame_camera_runtime.py" &&
-                   args.back() == "HEADSET");
-            auto child = std::make_unique<Camera>();
-            camera = child.get();
-            return child;
-        },
-        [&](const std::string &, bool) {
-            return std::make_unique<session_replay::SteamUi>(filter, stamp, events);
-        },
-        [&](const auto &value) { saved = value; });
+        assert(args.front() == "/usr/bin/python3" &&
+               args.at(2) == "/test/optical/frame_camera_runtime.py" && args.back() == "HEADSET");
+        auto child = std::make_unique<Camera>();
+        camera = child.get();
+        return child;
+    };
+    const auto make_filter = [&](const std::string &, bool) {
+        return std::make_unique<session_replay::SteamUi>(filter, stamp, events);
+    };
+    ct::OpticalSession session(runtime, device, cal, {}, "/test", make_camera, make_filter,
+                               [&](const auto &value) { saved = value; });
     ct::optical::Packet packet{};
     ct::ControllerInput report{};
     report.report.acceleration = {0, 9.80665, 0};
@@ -293,8 +297,53 @@ int main() {
     const auto reanchored = step();
     assert(reanchored && session.acquired() &&
            reanchored->position[0] - previous->position[0] > 2.2);
+    const auto checkpoint = session.checkpoint();
+    assert(checkpoint);
     session.close();
     assert(camera->stopped && !hid->raw && hid->brightness == 25);
+
+    runtime.head = ct::rigid_pose({std::cos(.35), 0, -std::sin(.35), 0}, {2.5, 1.6, 0});
+    const auto wake = [&](const ct::Vector3 &movement, const ct::Vector3 &gravity,
+                          bool same_device) {
+        auto anchor = *checkpoint;
+        if (!same_device)
+            anchor.controller_serial = "ANOTHER";
+        micros += 60000000;
+        ct::OpticalSession waking(runtime, device, *saved, {}, "/test", make_camera, make_filter,
+                                  {}, anchor);
+        report.report.acceleration = gravity;
+        const auto tick = [&] {
+            micros += 5000;
+            report.report.sensor_tick += 5000;
+            report.received = ct::monotonic_time();
+            return waking.step({report});
+        };
+        camera->emit("ready", ct::raw_time());
+        assert(!tick() && camera->checking_resume == same_device);
+        camera->emit("light", ct::raw_time());
+        for (int i = 0; i < 220; ++i)
+            assert(!tick());
+        const auto point =
+            ct::transform_point(ct::inverse_pose(runtime.head), ct::add(anchor.led, movement));
+        camera->emit("led", ct::raw_time() - .01, point);
+        assert(!tick());
+        camera->emit("led", ct::raw_time() - .01, point);
+        const auto restored = tick();
+        const bool expect_resume = same_device && ct::norm(movement) < .15 && gravity[0] == 0;
+        assert(camera->resumed == expect_resume && bool(restored) == expect_resume);
+        if (restored) {
+            assert(ct::distance(restored->position, reanchored->position) < .03);
+            assert(std::abs(ct::dot(restored->orientation, anchor.orientation)) > .9999);
+        } else {
+            assert(!waking.checkpoint());
+            camera->emit("seed", ct::raw_time() - .01);
+            assert(tick() && waking.acquired());
+        }
+    };
+    wake({}, {0, 9.80665, 0}, true);
+    wake({.4, 0, 0}, {0, 9.80665, 0}, true);
+    wake({}, {9.80665, 0, 0}, true);
+    wake({}, {0, 9.80665, 0}, false);
     close(pair_fd[0]);
     close(pair_fd[1]);
     close(gate_fd[0]);

@@ -311,7 +311,11 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
         }
     }
     try {
+        if (restart || !options_.tracking_enabled)
+            tracking_resume_.reset();
         if (session_ && (!options_.tracking_enabled || !awake || !connected)) {
+            if (options_.tracking_enabled && !restart)
+                tracking_resume_ = session_->checkpoint();
             send_op("hide");
             send_op("input_off");
             ui_enabled_ = false;
@@ -331,9 +335,10 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
             status_ = "Put Frame on to start tracking.";
         if (options_.tracking_enabled && awake && connected && !session_ &&
             monotonic_() >= retry_) {
-            session_ = host_.track(options_);
+            session_ = host_.track(options_, tracking_resume_);
             if (!session_)
                 throw std::runtime_error("tracking session was not created");
+            tracking_resume_.reset();
         }
         const auto typing = keyboard_.update(latest_input_,
                                              session_ && options_.tracking_enabled && awake &&
@@ -355,6 +360,9 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
         }
     } catch (const std::exception &error) {
         status_ = error.what();
+        const bool asleep = status_.rfind("Headset asleep", 0) == 0;
+        if (session_ && options_.tracking_enabled && !restart)
+            tracking_resume_ = session_->checkpoint();
         send_op("hide");
         send_op("input_off");
         ui_enabled_ = false;
@@ -364,7 +372,7 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
         } catch (const std::exception &cleanup) {
             status_ += " Cleanup: " + std::string(cleanup.what());
         }
-        retry_ = monotonic_() + (retryable(error) ? 5 : 15);
+        retry_ = monotonic_() + (asleep ? .5 : retryable(error) ? 5 : 15);
         tracking_problem_ = status_;
         host_.log(status_);
     }

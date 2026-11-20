@@ -38,6 +38,29 @@ void event_boundary(const std::string &event) {
 }
 } // namespace
 int main() {
+    {
+        app_replay::Host host;
+        auto current = j::parse("{}");
+        host.current = current.get();
+        host.checkpoint = ct::TrackingResume{"HEADSET", "CONTROLLER", {0, 1, -.4}, {1, 0, 0, 0}};
+        ct::Application app(
+            host, {}, true, [&] { return host.now; }, [&] { return host.now + 1000; });
+        app.step(true, true, {});
+        assert(!host.requested_resume);
+        app.step(false, false, {});
+        host.now += 60;
+        app.step(true, true, {});
+        assert(host.requested_resume && host.requested_resume->led == host.checkpoint->led);
+        app.step(true, false, {});
+        app.step(false, false, {});
+        app.step(true, true, {});
+        assert(host.requested_resume && host.requested_resume->led == host.checkpoint->led);
+        app.step(false, false, {});
+        current = j::parse(R"({"events":[{"op":"action","action":"acquire"}]})");
+        host.current = current.get();
+        app.step(true, true, {});
+        assert(!host.requested_resume);
+    }
     for (bool enabled : {false, true}) {
         app_replay::Host host;
         auto current = j::parse("{}");

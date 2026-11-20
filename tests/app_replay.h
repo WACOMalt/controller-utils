@@ -18,6 +18,9 @@ class Host : public ct::ApplicationHost {
         bool acquired() const override {
             return host_.acquisition_complete;
         }
+        std::optional<ct::TrackingResume> checkpoint() const override {
+            return host_.checkpoint;
+        }
         const ct::TrackingInputState &input_state() const override {
             return input_;
         }
@@ -72,6 +75,7 @@ class Host : public ct::ApplicationHost {
     bool acquisition_complete = true;
     bool keyboard_pending = false;
     bool progress_available = false;
+    std::optional<ct::TrackingResume> checkpoint, requested_resume;
     static json_object *input_json(const ct::ControllerInput &input) {
         const auto &r = input.report;
         auto result = json_object_new_object();
@@ -122,7 +126,9 @@ class Host : public ct::ApplicationHost {
     void autostart(bool enabled) override {
         record("autostart", json_object_new_boolean(enabled));
     }
-    std::unique_ptr<ct::TrackingSessionView> track(const ct::Settings &) override {
+    std::unique_ptr<ct::TrackingSessionView>
+    track(const ct::Settings &, const std::optional<ct::TrackingResume> &resume) override {
+        requested_resume = resume;
         record("track");
         return std::make_unique<Session>(*this);
     }

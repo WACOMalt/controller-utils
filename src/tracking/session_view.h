@@ -15,12 +15,19 @@ struct TrackingInputState {
     std::string keyboard_health = "off";
 };
 
+struct TrackingResume {
+    std::string headset_serial, controller_serial;
+    Vector3 led;
+    Quaternion orientation;
+};
+
 class TrackingSessionView {
   public:
     AlignmentGuide guide;
     std::string status = "Starting controller tracking...";
     virtual ~TrackingSessionView() = default;
     virtual bool acquired() const = 0;
+    virtual std::optional<TrackingResume> checkpoint() const = 0;
     virtual const TrackingInputState &input_state() const = 0;
     virtual void controls(const std::optional<ControllerInput> &input, bool enabled,
                           bool typing = false) = 0;

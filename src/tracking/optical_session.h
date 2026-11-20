@@ -21,6 +21,9 @@ class OpticalSession final : public TrackingSessionView {
     InertialPosition position;
     PoseHistory heads;
     std::optional<Quaternion> alignment;
+    Vector3 last_led{};
+    std::optional<TrackingResume> resume;
+    double resume_seen = 0;
     struct InputState : TrackingInputState {
         std::optional<InputControls> input;
         std::optional<double> received, raw_received, filter_confirmed;
@@ -44,17 +47,20 @@ class OpticalSession final : public TrackingSessionView {
     bool confirm_input_gate(int index, double now);
     void update_beam(double now);
     void send_command(const char *op);
+    void check_resume(double time, const Vector3 &led, const Quaternion &orientation);
     void observation(json_object *event, double now);
 
   public:
     OpticalSession(RuntimeView &r, std::shared_ptr<ControllerDevice> d, TrackingCalibration c,
                    const Settings &options, const std::filesystem::path &root,
                    const ChildFactory &children, const SteamUiFactory &ui,
-                   std::function<void(const TrackingCalibration &)> save = {});
+                   std::function<void(const TrackingCalibration &)> save = {},
+                   const std::optional<TrackingResume> &saved = {});
     ~OpticalSession() override;
     bool acquired() const override {
         return alignment && fix && !guide.started && !closed;
     }
+    std::optional<TrackingResume> checkpoint() const override;
     const TrackingInputState &input_state() const override {
         return input;
     }

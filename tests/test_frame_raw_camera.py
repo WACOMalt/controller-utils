@@ -5,6 +5,7 @@ import os
 import socket
 import sys
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -120,6 +121,35 @@ class RawCameraTest(unittest.TestCase):
             update.assert_not_called()
             tracker.exposure(38, 1.2, image, lambda _: True)
             self.assertTrue(update.call_args.args[2])
+
+    def test_restored_alignment_streams_led_without_using_a_pending_palm(self):
+        with patch.object(
+            sys, "path", [str(Path(__file__).resolve().parents[1] / "tools"), *sys.path]
+        ):
+            import frame_camera_worker as worker
+
+        head = np.column_stack([np.eye(3), np.zeros(3)])
+        with patch.object(worker, "PalmBootstrap", return_value=SimpleNamespace(head=head)):
+            tracker = worker.CameraTracking(
+                dict.fromkeys(("left", "right", "top", "bottom")), {}, None
+            )
+
+        tracker.lit_requested = tracker.check_resume = True
+        tracker.enabled_at = 1.0
+        fix = (np.array([0, 0, -0.5]), ("left", "right"))
+        with patch.object(tracker.led, "update", return_value=fix):
+            self.assertEqual(
+                [event["op"] for event in tracker.exposure(38, 1.1, {}, bool)], ["led"]
+            )
+            tracker.pending = Future()
+            tracker.pending.set_result(SimpleNamespace(time=1.1))
+            tracker.accept_alignment()
+            self.assertFalse(tracker.needs_seed)
+            self.assertEqual(
+                [event["op"] for event in tracker.exposure(38, 1.2, {}, bool)], ["led"]
+            )
+            tracker.reacquire()
+            self.assertTrue(tracker.needs_seed)
 
     def test_calibration_requires_four_models(self):
         with self.assertRaises(KeyError):

@@ -9,7 +9,8 @@
 #include <string>
 
 namespace ct::steamvr {
-GateLayout resolve_gate_reviewed(GateKind, const std::string &, const char *, unsigned = 11);
+GateLayout resolve_gate_reviewed(GateKind, const std::string &, const char *, unsigned = 11,
+                                 const char * = nullptr);
 }
 
 namespace {
@@ -89,7 +90,8 @@ int main() {
     const auto signature = digest(first, 0x1100);
     rejects([&] { resolve_gate_layout(GateKind::Input, first); });
     auto a = resolve_gate_reviewed(GateKind::Input, first, signature.c_str());
-    auto b = resolve_gate_reviewed(GateKind::Input, second, signature.c_str());
+    auto b = resolve_gate_reviewed(GateKind::Input, second, "other reviewed context", 11,
+                                   signature.c_str());
     assert(a.site == 0x112c && a.cave == 0x480);
     assert(b.site == 0x142c && b.cave == 0x4c0);
     uint32_t branch;

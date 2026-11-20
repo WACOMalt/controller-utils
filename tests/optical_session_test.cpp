@@ -78,7 +78,8 @@ int main() {
     ct::OpticalSession session(
         runtime, device, cal, {}, "/test",
         [&](const std::vector<std::string> &args) -> std::unique_ptr<ct::ChildChannel> {
-            assert(args.at(2) == "/test/optical/frame_camera_worker.py" &&
+            assert(args.front() == "/usr/bin/python3" &&
+                   args.at(2) == "/test/optical/frame_camera_runtime.py" &&
                    args.back() == "HEADSET");
             auto child = std::make_unique<Camera>();
             camera = child.get();

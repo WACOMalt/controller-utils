@@ -38,13 +38,6 @@ LEGACY = tuple(
         ),
     )
 )
-NUMPY = "2.5.5"
-NUMPY_WHEELS = (
-    "a0750f2156d53446caca85663d0b65d67214e1664b9050454a731ea1418d176a",
-    "ae2b8285d0b4eed24739c3ca9ec0fa424a0247489c01e1d5fe2815a599e11d33",
-    "cc6eb7502facce90349b4097a26821af224aaa0ab36e78304711cdb544352882",
-    "e99bf8a3d54693f2063fa6c7d13955d460a9f543d9dbc80e69a92da288259b28",
-)
 
 
 def command(*args, capture=False, check=True, input=None):
@@ -177,40 +170,6 @@ def atomic_text(path, content, mode):
             temporary.unlink(missing_ok=True)
 
 
-def numpy_environment(data):
-    target = data / f"numpy-{NUMPY}-{sys.implementation.cache_tag}"
-    python = target / "bin/python"
-    imports = f"import numpy; assert numpy.__version__ == '{NUMPY}'"
-    if python.is_file() and command(python, "-I", "-c", imports, check=False).returncode == 0:
-        return target
-    if target.exists():
-        raise RuntimeError(f"Move the incomplete Python environment aside at {target}")
-    with tempfile.TemporaryDirectory(prefix="numpy-", dir=data) as directory:
-        directory = Path(directory)
-        trial = directory / "venv"
-        requirement = directory / "requirements.txt"
-        hashes = " ".join(f"--hash=sha256:{digest}" for digest in NUMPY_WHEELS)
-        requirement.write_text(f"numpy=={NUMPY} {hashes}\n")
-        command(sys.executable, "-m", "venv", trial)
-        command(
-            trial / "bin/python",
-            "-m",
-            "pip",
-            "--isolated",
-            "install",
-            "--index-url",
-            "https://pypi.org/simple",
-            "--only-binary=:all:",
-            "--no-deps",
-            "--require-hashes",
-            "-r",
-            requirement,
-        )
-        command(trial / "bin/python", "-I", "-c", imports)
-        trial.rename(target)
-    return target
-
-
 def legacy_installation():
     for item in LEGACY:
         if item.exists() or item.is_symlink():
@@ -220,14 +179,13 @@ def legacy_installation():
             )
 
 
-def validate_calibration(package, python, camera_config):
+def validate_calibration(package, data, camera_config):
     command(
-        python / "bin/python",
-        "-I",
-        "-c",
-        "import json,sys; sys.path.insert(0,sys.argv[1]); "
-        "from frame_raw_camera import parse_calibration; parse_calibration(json.load(sys.stdin))",
-        package / "app/optical",
+        sys.executable,
+        "-B",
+        package / "app/optical/frame_camera_runtime.py",
+        "--validate-calibration",
+        data,
         input=camera_config,
     )
 
@@ -274,8 +232,7 @@ def install(package, camera_config):
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (data / "frame-install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        python = numpy_environment(data)
-        validate_calibration(package, python, camera_config)
+        validate_calibration(package, data, camera_config)
         sources = policy_sources(package)
         missing = [path for path, source in sources.items() if not policy_present(path, source)]
         if missing:
@@ -290,7 +247,6 @@ def install(package, camera_config):
         backup = Path(tempfile.mkdtemp(prefix="previous-frame-", dir=BASE))
         stage = backup / "replacement"
         shutil.copytree(package / "app", stage)
-        (stage / "optical/venv").symlink_to(python, target_is_directory=True)
         launcher = BASE / "controller-utils"
         config = data / "camera-calibration.json"
         camera_env, input_env, drop_ins = service_files()

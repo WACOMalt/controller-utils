@@ -13,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import stage_frame  # noqa: E402
+from frame_camera_runtime import NUMPY, numpy_python  # noqa: E402
 
 
 def arm64_file(path):
@@ -93,6 +94,24 @@ class FramePackageTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum"):
                 verify(beta)
 
+    def test_camera_uses_the_installed_python_after_switching_channels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+
+            def provision(*args):
+                if args[1:3] == ("-m", "venv"):
+                    executable = args[-1] / "bin/python"
+                    executable.parent.mkdir(parents=True)
+                    executable.touch()
+
+            with patch("frame_camera_runtime.run", side_effect=provision) as run:
+                for tag in ("cpython-312", "cpython-314", "cpython-312"):
+                    with patch.object(sys.implementation, "cache_tag", tag):
+                        python = numpy_python(data)
+                    self.assertEqual(python, data / f"numpy-{NUMPY}-{tag}/bin/python")
+                    self.assertTrue(python.is_file())
+                self.assertEqual(run.call_count, 6)
+
     def test_desktop_artifacts_cannot_be_staged_for_frame(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(stage_frame, "read_source", return_value=b"desktop"):
@@ -142,7 +161,6 @@ class FramePackageTest(unittest.TestCase):
                     "RULE": rule,
                     "KEEP": keep,
                     "DESKTOP": desktop,
-                    "numpy_environment": lambda _: root / "numpy",
                     "systemctl": lambda *args, **kwargs: SimpleNamespace(
                         returncode=int(args[0] == "is-enabled")
                     ),
@@ -209,7 +227,6 @@ class FramePackageTest(unittest.TestCase):
                 DESKTOP=desktop,
                 RULE=rule,
                 KEEP=keep,
-                numpy_environment=lambda _: root / "numpy",
                 validate_calibration=lambda *args: None,
                 ready=lambda: None,
                 command=command,

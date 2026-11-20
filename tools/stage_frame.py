@@ -39,6 +39,7 @@ OPTICAL_FILES = (
     "frame_camera_hook.so",
     "frame_input_hook.so",
     "frame_palm_inference",
+    "frame_camera_runtime.py",
     "frame_camera_worker.py",
     "frame_raw_camera.py",
     "frame_led_tracking.py",

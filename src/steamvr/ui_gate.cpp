@@ -91,7 +91,7 @@ GateLayout place_gate(GateKind kind, uintptr_t site, uintptr_t cave, unsigned be
     return layout;
 }
 GateLayout resolve_gate_reviewed(GateKind kind, const std::string &bytes, const char *expected,
-                                 unsigned beam_register = 11) {
+                                 unsigned beam_register = 11, const char *alternate = nullptr) {
     const auto prototype = place_gate(kind, 0, 0, beam_register);
     auto pattern = prototype.original;
     pattern.insert(pattern.end(), prototype.following.begin(), prototype.following.end());
@@ -102,7 +102,8 @@ GateLayout resolve_gate_reviewed(GateKind kind, const std::string &bytes, const 
         throw std::runtime_error("native gate context is outside the image");
     if (!expected)
         throw std::invalid_argument("native gate signature is unavailable");
-    if (steamvr::code_signature(image.at(site - before, 128, true), 128) != expected)
+    const auto signature = steamvr::code_signature(image.at(site - before, 128, true), 128);
+    if (signature != expected && (!alternate || signature != alternate))
         throw std::runtime_error("native gate context signature mismatch");
     const auto cave = image.padding(kind == GateKind::Input, prototype.payload.size());
     const auto page_size = sysconf(_SC_PAGESIZE);
@@ -156,7 +157,8 @@ GateLayout resolve_beam_reviewed(const std::string &bytes,
 GateLayout resolve_gate_layout(GateKind kind, const std::string &bytes) {
     if (kind == GateKind::Input)
         return resolve_gate_reviewed(
-            kind, bytes, "790dac44ec743f59cb5f9d8498de276e4fb8969228ee2e205c7f416591e30db8");
+            kind, bytes, "790dac44ec743f59cb5f9d8498de276e4fb8969228ee2e205c7f416591e30db8", 11,
+            "2249f7e44410741a5a5f3b7efe9fbdfa4e5b0f4201c8f7e0ecb517f0c4a000bc");
     if (kind != GateKind::Beam)
         throw std::invalid_argument("unknown native gate kind");
     return resolve_beam_reviewed(

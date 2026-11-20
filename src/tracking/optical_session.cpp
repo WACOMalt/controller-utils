@@ -37,8 +37,9 @@ OpticalSession::OpticalSession(RuntimeView &r, std::shared_ptr<ControllerDevice>
             !optical::same_user(driver.get()))
             throw std::runtime_error(
                 "Controller Utils optical driver is unavailable. Restart SteamVR.");
-        camera = children({(root / "optical/venv/bin/python").string(), "-u",
-                           (root / "optical/frame_camera_worker.py").string(), cal.headset_serial});
+        camera =
+            children({"/usr/bin/python3", "-B", (root / "optical/frame_camera_runtime.py").string(),
+                      cal.headset_serial});
         try {
             filter = ui(serial, false);
         } catch (const std::exception &e) {
@@ -318,7 +319,7 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
                             norm(r.report.angular_velocity));
         }
     }
-    if (now - notified >= .015) {
+    if (source_ready && now - notified >= .015) {
         json::Value msg(json_object_new_object());
         json_object_object_add(msg.get(), "op", json_object_new_string("sample"));
         json_object_object_add(msg.get(), "time", json_object_new_double(now));

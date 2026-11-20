@@ -74,10 +74,10 @@
             return inactive("Steam system button dispatch changed");
         }
         if (!system?.active) {
-            if (Object.hasOwn(source, "OnSystemButtonPress") ||
-                !reviewed(source.OnSystemButtonPress, 184, 1945712728))
-                throw new Error("Unsupported Steam system button dispatcher");
             const original = source.OnSystemButtonPress;
+            if (Object.hasOwn(source, "OnSystemButtonPress") ||
+                !(reviewed(original, 184, 1945712728) || reviewed(original, 178, 1685890915)))
+                throw new Error("Unsupported Steam system button dispatcher");
             const priorTap = system?.owner === request.owner ? system.tap : request.tap;
             let timer;
             system = {
@@ -339,10 +339,8 @@
     if (!lease) {
         if (Object.hasOwn(nav, name) || typeof nav[name] !== "function")
             throw new Error("Unexpected Steam input dispatch owner");
-        // Compatibility fingerprint of the inspected dispatcher.
-        // The privileged native gate separately pins its complete executable hash.
         const original = nav[name];
-        if (!reviewed(original, 808, 0x1f133423))
+        if (!(reviewed(original, 808, 0x1f133423) || reviewed(original, 739, 3078376992)))
             throw new Error("Unsupported Steam input dispatcher version");
         const sources = nav.m_rgGamepadInputSources?.filter(
             s => typeof s.HandleControllerInputMessages === "function" &&

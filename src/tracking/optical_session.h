@@ -13,6 +13,9 @@ class OpticalSession final : public TrackingSessionView {
     RuntimeView &runtime;
     std::shared_ptr<ControllerDevice> device;
     TrackingCalibration cal;
+    std::function<void(const TrackingCalibration &)> save_calibration;
+    StationaryGyroBias gyro_calibration;
+    bool restart_anchor = false;
     Settings settings;
     OrientationFilter imu;
     InertialPosition position;
@@ -34,18 +37,20 @@ class OpticalSession final : public TrackingSessionView {
            filter_epoch = 0, last_rendered_orientation = 0, last_rendered_fix = 0,
            last_presentation = 0;
     bool closed = false, source_ready = false;
-    double gate_sent = 0, gate_confirmed = 0, beam_sent = 0;
+    double gate_sent = 0, gate_confirmed = 0, beam_sent = 0, imu_retry = 0;
+    double filter_attempt = 0, filter_retry = 0;
+    void clear_filter_confirmation(double now);
     int gate_index = -1;
     bool confirm_input_gate(int index, double now);
     void update_beam(double now);
     void send_command(const char *op);
-    void reset_position();
     void observation(json_object *event, double now);
 
   public:
     OpticalSession(RuntimeView &r, std::shared_ptr<ControllerDevice> d, TrackingCalibration c,
                    const Settings &options, const std::filesystem::path &root,
-                   const ChildFactory &children, const SteamUiFactory &ui);
+                   const ChildFactory &children, const SteamUiFactory &ui,
+                   std::function<void(const TrackingCalibration &)> save = {});
     ~OpticalSession() override;
     bool acquired() const override {
         return alignment && fix && !guide.started && !closed;

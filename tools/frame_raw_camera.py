@@ -25,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 from frame_led_tracking import calibrated_cameras
+from frame_palm_bootstrap import PalmBootstrap
 
 # Linux dma-buf UAPI: _IOW('b', 0, struct dma_buf_sync).
 DMA_BUF_IOCTL_SYNC = 0x40086200
@@ -59,12 +60,28 @@ def receive(sock, stack):
     return msg, fds
 
 
+def parse_calibration(packet, headset=None):
+    serial = packet["device"]["device_serial_number"]
+    if (
+        packet.get("version") != 1
+        or not isinstance(serial, str)
+        or not serial
+        or (headset is not None and serial != headset)
+    ):
+        raise ValueError("Raw camera feed does not match this Frame")
+    cameras, config = calibrated_cameras(packet["rig"], packet["metadata"], packet["device"])
+    if [camera.shape for camera in cameras.values()] != [(1024, 1056)] * 2 + [(480, 640)] * 2:
+        raise ValueError("Invalid Frame camera dimensions")
+    PalmBootstrap(config, None)
+    return cameras, config
+
+
 def calibration(sock, headset):
     with ExitStack() as stack:
         packet, fds = receive(sock, stack)
-        if fds or packet.get("version") != 1 or packet["device"]["device_serial_number"] != headset:
-            raise ValueError("Raw camera feed does not match this Frame")
-        return calibrated_cameras(packet["rig"], packet["metadata"], packet["device"])
+        if fds:
+            raise ValueError("Unexpected camera descriptors in calibration")
+        return parse_calibration(packet, headset)
 
 
 def pixels(fd, shape, stride, stack, *, offset=0, udmabuf=False):

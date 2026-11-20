@@ -68,8 +68,9 @@ int main() {
     auto device =
         std::make_shared<ct::ControllerDevice>(std::make_unique<ct::test::FakeTransport>(hid));
     ct::TrackingCalibration cal{
-        "HEADSET", {1, "TEST1234", {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {}}, {0, .01, -.02}};
+        "HEADSET", {1, "TEST1234", {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {}}, {0, .01, -.02}, false};
     Camera *camera{};
+    std::optional<ct::TrackingCalibration> saved;
     auto filter = std::make_shared<session_replay::ChildState>();
     auto log = ct::json::parse("[]");
     auto *events = log.get();
@@ -85,14 +86,17 @@ int main() {
         },
         [&](const std::string &, bool) {
             return std::make_unique<session_replay::SteamUi>(filter, stamp, events);
-        });
+        },
+        [&](const auto &value) { saved = value; });
     ct::optical::Packet packet{};
     ct::ControllerInput report{};
     report.report.acceleration = {0, 9.80665, 0};
-    bool ui = false, gate_ready = false;
+    report.report.angular_velocity[1] = .004;
+    bool ui = false, gate_ready = false, stalled = false;
     auto step = [&] {
         micros += 5000;
-        report.report.sensor_tick += 5000;
+        if (!stalled)
+            report.report.sensor_tick += 5000;
         report.received = stamp = ct::monotonic_time();
         session.controls(report, ui, false);
         auto pose = session.step({report});
@@ -115,6 +119,8 @@ int main() {
     for (int i = 0; i < 220; ++i)
         assert(!step());
     assert(camera->lit && hid->raw);
+    assert(saved && saved->gyro_calibrated &&
+           std::abs(saved->body.gyro_bias_report_rad_s[1] - .004) < 1e-9);
     camera->emit("seed", ct::raw_time() - .25);
     assert(!step() && !session.acquired());
     camera->emit("led", ct::raw_time() - .075);
@@ -204,6 +210,38 @@ int main() {
     for (int i = 0; i < 31; ++i)
         recovered = step();
     assert(recovered && ct::distance(recovered->position, pose->position) < .03);
+    session.rebase(ct::rigid_pose({1, 0, 0, 0}, {1, 0, 0}));
+    assert(step() && session.acquired() && camera->restarts == 0);
+    const auto command_count = hid->commands.size();
+    stalled = true;
+    for (int i = 0; i < 25; ++i)
+        step();
+    assert(hid->commands.size() == command_count + 1 && session.acquired());
+    stalled = false;
+    for (int i = 0; i < 10; ++i)
+        step();
+
+    auto last_filter_enabled = [&] {
+        return ct::json::boolean(ct::json::field(
+            ct::json::item(ct::json::item(events, ct::json::array_size(events) - 1), 1),
+            "enabled"));
+    };
+    gate_ready = false;
+    for (int i = 0; i < 110; ++i)
+        step();
+    assert(!(packet.input.flags & 1) && !last_filter_enabled());
+    gate_ready = true;
+    for (int i = 0; i < 175; ++i)
+        step();
+    assert((packet.input.flags & 1) && last_filter_enabled());
+    filter->pending.push_back(
+        ct::json::parse(R"({"op":"input_filter_error","error":"Steam UI restarted"})"));
+    for (int i = 0; i < 4; ++i)
+        step();
+    assert(!(packet.input.flags & 1) && !last_filter_enabled() && !filter->stopped);
+    for (int i = 0; i < 175; ++i)
+        step();
+    assert(packet.input.flags & 1);
     ui = false;
     assert(step() && step());
     assert(!(packet.input.flags & 1));
@@ -238,9 +276,22 @@ int main() {
     const auto during_restart = step();
     assert(during_restart && during_restart->time == fresh_led && session.guide.started);
     camera->emit("seed", ct::raw_time() - .12);
-    const auto restarted = step();
-    assert(restarted && restarted->time == fresh_led && camera->restarts == 1 &&
-           !session.guide.started && session.acquired());
+    assert(step() && !session.acquired());
+    camera->emit("led", ct::raw_time() - .01);
+    assert(step() && session.acquired() && camera->restarts == 1);
+
+    const auto previous = step();
+    runtime.head[3] += 2.5;
+    session.acquire();
+    for (int i = 0; i < 50; ++i)
+        assert(step());
+    assert(previous && !session.acquired());
+    camera->emit("seed", ct::raw_time() - .2);
+    assert(step() && !session.acquired());
+    camera->emit("led", ct::raw_time() - .01);
+    const auto reanchored = step();
+    assert(reanchored && session.acquired() &&
+           reanchored->position[0] - previous->position[0] > 2.2);
     session.close();
     assert(camera->stopped && !hid->raw && hid->brightness == 25);
     close(pair_fd[0]);

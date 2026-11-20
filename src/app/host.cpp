@@ -67,8 +67,9 @@ std::unique_ptr<TrackingSessionView> NativeApplicationHost::track(const Settings
         throw std::runtime_error("Connect a Steam Controller to start tracking.");
     const auto calibration =
         controller_calibration(data_, runtime_.serial(0), controller->serial());
-    return std::make_unique<OpticalSession>(runtime_, controller, calibration, options, root_,
-                                            children_, steam_ui_);
+    return std::make_unique<OpticalSession>(
+        runtime_, controller, calibration, options, root_, children_, steam_ui_,
+        [data = data_](const auto &value) { save_controller_calibration(data, value); });
 }
 NativeShortcuts &NativeApplicationHost::shortcuts() {
     if (!shortcuts_) {

@@ -99,4 +99,41 @@ TrackingCalibration controller_calibration(const std::filesystem::path &data,
     save_controller_calibration(data, result);
     return result;
 }
+std::optional<Vector3> StationaryGyroBias::sample(const ControllerReport &report, double time) {
+    if (!std::isfinite(time) || !finite(report.acceleration) || !finite(report.angular_velocity))
+        throw std::invalid_argument("Invalid stationary calibration sample");
+    if (last_ && time <= *last_)
+        return {};
+    if ((last_ && time - *last_ > .05) ||
+        std::abs(norm(report.acceleration) - 9.80665) > .05 * 9.80665 ||
+        norm(report.angular_velocity) > .02) {
+        *this = StationaryGyroBias{};
+        return {};
+    }
+    if (!first_)
+        first_ = time;
+    last_ = time;
+    ++count_;
+    for (size_t i = 0; i < 3; ++i) {
+        const double a = report.acceleration[i], g = report.angular_velocity[i];
+        angular_[i] += g;
+        angular_squared_[i] += g * g;
+        acceleration_[i] += a;
+        acceleration_squared_[i] += a * a;
+    }
+    if (time - *first_ < .75 || count_ < 32)
+        return {};
+    const auto mean = scale(angular_, 1. / count_);
+    double av = 0, gv = 0;
+    for (size_t i = 0; i < 3; ++i) {
+        gv += std::max(0., angular_squared_[i] / count_ - mean[i] * mean[i]);
+        av += std::max(0.,
+                       acceleration_squared_[i] / count_ - std::pow(acceleration_[i] / count_, 2));
+    }
+    if (gv > .002 * .002 || av > .05 * .05 || norm(mean) > .01) {
+        *this = StationaryGyroBias{};
+        return {};
+    }
+    return mean;
+}
 } // namespace ct

@@ -62,7 +62,9 @@ class CameraTracking:
 
     def exposure(self, kind, t, images, timely, borrowed=False):
         events = []
-        if self.lit_requested and not timely(t):
+        if self.lit_requested and (
+            not timely(t) or (kind == 38 and (self.enabled_at is None or t < self.enabled_at))
+        ):
             return events
         if kind == 38:
             if self.first_ir is None:

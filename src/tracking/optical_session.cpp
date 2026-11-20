@@ -21,10 +21,11 @@ FileDescriptor connect_gate(const char *channel) {
 OpticalSession::OpticalSession(RuntimeView &r, std::shared_ptr<ControllerDevice> d,
                                TrackingCalibration c, const Settings &options,
                                const std::filesystem::path &root, const ChildFactory &children,
-                               const SteamUiFactory &ui)
-    : runtime(r), device(std::move(d)), cal(std::move(c)), settings(options),
-      imu(cal.body, device->serial(), cal.emitter), position(optical_smoothing(options)),
-      serial(device->serial()) {
+                               const SteamUiFactory &ui,
+                               std::function<void(const TrackingCalibration &)> save)
+    : runtime(r), device(std::move(d)), cal(std::move(c)), save_calibration(std::move(save)),
+      settings(options), imu(cal.body, device->serial(), cal.emitter),
+      position(optical_smoothing(options)), serial(device->serial()) {
     started = last_imu = raw_time();
     if (runtime.serial(0) != cal.headset_serial || !runtime.head_pose())
         throw std::runtime_error("Put the calibrated Frame on to start tracking.");
@@ -61,12 +62,8 @@ void OpticalSession::send_command(const char *op) {
     json_object_object_add(msg.get(), "time", json_object_new_double(raw_time()));
     camera->send(msg.get());
 }
-void OpticalSession::reset_position() {
-    alignment.reset();
-    position = InertialPosition(optical_smoothing(settings));
-    fix = 0;
-}
 void OpticalSession::acquire() {
+    restart_anchor = false;
     send_command("reacquire");
     guide.begin(raw_time());
 }
@@ -81,13 +78,12 @@ void OpticalSession::recenter() {
         return;
     const double half = (std::atan2((*head)[2], (*head)[10]) - std::atan2(back[0], back[2])) / 2;
     alignment = multiply(Quaternion{std::cos(half), 0, std::sin(half), 0}, *alignment);
-    guide.finish(raw_time());
+    if (!guide.started)
+        guide.finish(raw_time());
 }
 void OpticalSession::rebase(const RigidPose &delta) {
     validate_pose(delta);
-    heads = {};
-    reset_position();
-    acquire();
+    // Optical poses use raw space. The renderer already applies the standing transform.
 }
 void OpticalSession::update_options(const Settings &options) {
     if (lit && options.brightness != settings.brightness)
@@ -124,10 +120,6 @@ bool OpticalSession::confirm_input_gate(int index, double now) {
         gate_sent = gate_confirmed = 0;
         return false;
     }
-    if (!input_gate && now - gate_sent >= .15) {
-        gate_sent = now;
-        input_gate = connect_gate("input");
-    }
     if (!input_gate)
         return false;
     if (gate_index != index || now - gate_sent >= .15) {
@@ -158,6 +150,12 @@ bool OpticalSession::confirm_input_gate(int index, double now) {
             gate_confirmed = now;
     }
     return gate_confirmed && now - gate_confirmed < .45;
+}
+void OpticalSession::clear_filter_confirmation(double now) {
+    input.filter_active = false;
+    input.filter_index.reset();
+    input.filter_confirmed.reset();
+    filter_epoch = now;
 }
 void OpticalSession::update_beam(double now) {
     if (!input.native_active || !input.activation_confirmed || !input.input ||
@@ -223,6 +221,10 @@ void OpticalSession::observation(json_object *event, double now) {
         const auto pose = json::numbers<12>(json::field(event, "transform"));
         validate_pose(pose);
         point = translation(pose);
+        if (!finite(point) || norm(point) > 1.6) {
+            acquire();
+            return;
+        }
         const auto world = multiply(quaternion(*head), quaternion(pose));
         if (!measured) {
             if (imu.orientation) {
@@ -234,7 +236,9 @@ void OpticalSession::observation(json_object *event, double now) {
             measured = world;
         }
         alignment = multiply(world, conjugate(*measured));
-        guide.finish(now);
+        restart_anchor = bool(guide.started);
+        if (!restart_anchor)
+            guide.finish(now);
     } else if (op == "led")
         point = json::numbers<3>(json::field(event, "point"));
     if (!alignment || !measured || t <= fix || now - t > .15)
@@ -253,10 +257,21 @@ void OpticalSession::observation(json_object *event, double now) {
     if (!finite(point) || norm(point) > 1.6)
         return;
     auto world = subtract(transform_point(*head, point), emitter);
+    if (restart_anchor) {
+        const auto estimate = position.at(t);
+        const auto current = position.value(now);
+        if (current && distance(estimate ? estimate->position : *current, world) > 1.5)
+            position = InertialPosition(position.smoothing);
+    }
     if (!position.time)
         position.sample(std::max(t, imu.orientation_time.value_or(t)), {}, 0);
-    if (position.observe(t, world, now))
+    if (position.observe(t, world, now)) {
         fix = t;
+        if (restart_anchor) {
+            restart_anchor = false;
+            guide.finish(now);
+        }
+    }
 }
 std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<ControllerInput> &reports) {
     const double now = raw_time(), mono = monotonic_time();
@@ -272,8 +287,27 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
         // During a swing the accelerometer is a poor gravity reference for the gyro.
         const double gravity_gain = !alignment || position.stationary ? 2. : .4;
         imu.sample(r.report, r.received, now - mono, head, gravity_gain);
-        if (imu.clock.last_tick != tick)
+        if (imu.clock.last_tick != tick) {
             last_imu = r.received + now - mono;
+            if (!cal.gyro_calibrated) {
+                if (fix && !position.stationary)
+                    gyro_calibration = {};
+                else if (const auto bias = gyro_calibration.sample(r.report, r.received)) {
+                    cal.body.gyro_bias_report_rad_s = imu.bias = *bias;
+                    cal.gyro_calibrated = true;
+                    if (imu.previous)
+                        imu.previous->second =
+                            imu.body_vector(subtract(r.report.angular_velocity, *bias));
+                    try {
+                        if (save_calibration)
+                            save_calibration(cal);
+                    } catch (const std::exception &error) {
+                        std::cerr << "Could not save controller gyro bias: " << error.what()
+                                  << '\n';
+                    }
+                }
+            }
+        }
         if (!imu.orientation_time || old == imu.orientation_time)
             continue;
         const double t = *imu.orientation_time;
@@ -315,8 +349,14 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
         observation(event.get(), raw_time());
     if (camera->exit_status())
         throw std::runtime_error("Camera worker stopped.");
-    if (source_ready && now - last_imu > 5)
-        throw std::runtime_error("Controller IMU stopped.");
+    if (source_ready && now - last_imu > .08) {
+        if (now - last_imu > 5)
+            throw std::runtime_error("Controller IMU stopped.");
+        if (!reports.empty() && mono - reports.back().received < .15 && now >= imu_retry) {
+            device->resume_imu();
+            imu_retry = now + .5;
+        }
+    }
     const auto action = guide.update(input.buttons, input.raw_received, now);
     if (action == AlignmentAction::Restart)
         acquire();
@@ -331,19 +371,38 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
                                      multiply(*alignment, *imu.orientation)};
     }
     const bool wanted = result && input.enabled && input.received && mono - *input.received < .15;
+    bool claim = wanted && filter && mono >= filter_retry;
+    if (claim && !input_gate) {
+        input_gate = connect_gate("input");
+        if (!input_gate) {
+            filter_retry = mono + .75;
+            claim = false;
+        }
+    }
+    const bool filtered = claim && input.filter_active && input.filter_confirmed &&
+                          mono - *input.filter_confirmed < .75;
+    const bool was_active = input.native_active;
+    input.native_active = filtered && confirm_input_gate(input.filter_index.value_or(-1), mono);
+    if (claim && !input.native_active &&
+        (was_active || (input.filter_requested && mono - filter_attempt >= .45))) {
+        filter_retry = mono + .75;
+        claim = false;
+    }
+    if (!claim)
+        confirm_input_gate(-1, mono);
     if (filter) {
         try {
-            if (wanted != input.filter_requested || input.typing != input.filter_typing ||
+            if (claim != input.filter_requested || input.typing != input.filter_typing ||
                 mono - last_filter >= .15) {
-                if (wanted != input.filter_requested || input.typing != input.filter_typing) {
-                    input.filter_active = false;
-                    input.filter_index.reset();
-                    filter_epoch = mono;
+                if (claim != input.filter_requested || input.typing != input.filter_typing) {
+                    clear_filter_confirmation(mono);
+                    if (claim && !input.filter_requested)
+                        filter_attempt = mono;
                 }
                 FilterRequest req;
-                req.enabled = wanted;
+                req.enabled = claim;
                 req.typing = input.typing;
-                req.details = wanted || input.typing;
+                req.details = claim || input.typing;
                 if (input.input) {
                     req.touches = unsigned(input.input->scroll_touch) |
                                   (unsigned(input.input->pad_touch) << 1);
@@ -351,7 +410,7 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
                                std::max(input.input->trigger, input.input->grip) > .1;
                 }
                 filter->send(req);
-                input.filter_requested = wanted;
+                input.filter_requested = claim;
                 input.filter_typing = input.typing;
                 last_filter = mono;
             }
@@ -364,19 +423,18 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
                         ack->active ? std::optional<int>(ack->index) : std::nullopt;
                     input.filter_confirmed = ack->time;
                     input.keyboard_health = ack->keyboard_health;
+                    input.error.reset();
                 } else if (auto *err = std::get_if<FilterError>(&event))
                     throw std::runtime_error(err->message);
             }
         } catch (const std::exception &e) {
             input.error = e.what();
-            input.filter_active = false;
-            filter->close();
-            filter.reset();
+            clear_filter_confirmation(mono);
+            input.native_active = false;
+            confirm_input_gate(-1, mono);
+            filter_retry = mono + .75;
         }
     }
-    const bool filtered = wanted && input.filter_active && input.filter_confirmed &&
-                          mono - *input.filter_confirmed < .75;
-    input.native_active = confirm_input_gate(filtered ? input.filter_index.value_or(-1) : -1, mono);
     if (!input.native_active)
         input.activation_confirmed = false;
     if (now - sent >= .009) {

@@ -99,3 +99,33 @@ class RawCameraTest(unittest.TestCase):
         send(self.fd)
         with self.assertRaisesRegex(ValueError, "read-only"):
             self.raw.frame(self.receiver, self.cameras, 0, consume)
+
+    def test_illumination_handoff_does_not_update_dark_baseline(self):
+        import frame_camera_worker as worker
+
+        with patch.object(worker, "PalmBootstrap", return_value=SimpleNamespace(head=None)):
+            tracker = worker.CameraTracking(
+                dict.fromkeys(("left", "right", "top", "bottom")), {}, None
+            )
+
+        tracker.lit_requested = True
+        image = {"left": np.full((2, 3), 255, dtype=np.uint8)}
+        with patch.object(tracker.led, "update", return_value=None) as update:
+            self.assertEqual(tracker.exposure(38, 1.0, image, lambda _: True), [])
+            tracker.enabled_at = 1.1
+            self.assertEqual(tracker.exposure(38, 1.05, image, lambda _: True), [])
+            update.assert_not_called()
+            tracker.exposure(38, 1.2, image, lambda _: True)
+            self.assertTrue(update.call_args.args[2])
+
+    def test_calibration_requires_four_models(self):
+        with self.assertRaises(KeyError):
+            self.raw.parse_calibration(
+                {
+                    "version": 1,
+                    "device": {"device_serial_number": "HEADSET"},
+                    "rig": {"cameras": []},
+                    "metadata": {"cameras": {}},
+                },
+                "HEADSET",
+            )

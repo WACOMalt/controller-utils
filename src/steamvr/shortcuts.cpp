@@ -68,7 +68,7 @@ OpenVrShortcutBackend::OpenVrShortcutBackend(Runtime &runtime) : runtime_(runtim
     iovec local{&table, sizeof(table)}, remote{mailbox_, sizeof(table)};
     if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != sizeof(table))
         throw std::runtime_error("SteamVR mailbox object unavailable");
-    static constexpr std::array<std::array<MailboxMethod, 3>, 3> contracts{
+    static constexpr std::array<std::array<MailboxMethod, 3>, 4> contracts{
         {{{{1604, "cd32ad99eb7f5f0b8b11e10715b6dd31655bb2b8196d0ef5850f0167da95257f"},
            {908, "a6c96eef5d737a1a239ee958478270cf0986dc671c109f9b9c6e429f276589a9"},
            {588, "b7c872b025ee4240ead009646b2cdaf9c21e92ab6646d9bd263f94d15e529b79"}}},
@@ -77,7 +77,10 @@ OpenVrShortcutBackend::OpenVrShortcutBackend(Runtime &runtime) : runtime_(runtim
            {588, "edbf9ae244991d5c06a77b0d367f7738ecb5002d85c77cc52c98db6b43cfa321"}}},
          {{{1604, "677ce5911ec80c114ca5597c584495e445aff5933f0f07d3e477849cd299ddec"},
            {908, "24d53c93a9163b91c278173c190f502cd6f9d21053c9c354d5cddfa50b46550d"},
-           {588, "ff8f45a69c7b8bc07de1689b6b743737c03316d036c23422ead6ccb69aaf61f4"}}}}};
+           {588, "ff8f45a69c7b8bc07de1689b6b743737c03316d036c23422ead6ccb69aaf61f4"}}},
+         {{{1604, "e18b63b722183345a4aab68558f7ac0ec4a9fbe2d6330400550306f8975241b8"},
+           {908, "2a63407f9fa27d242f76d1a1173f57a2c92fe5c1715419737be3a265d63bca59"},
+           {588, "15c9eee0454efe5eee8fc1aa7b84bb16d9740dbe73436420c72b89afca78b6f5"}}}}};
     try {
         const auto module = steamvr::Module::loaded(table, steamvr::compatibility::VrClient.path);
         if (!std::any_of(contracts.begin(), contracts.end(), [&](const auto &methods) {

@@ -92,33 +92,6 @@
             "click_deactivate_threshold": "0.45",
             "haptic_amplitude": "0"
           }
-        },
-        {
-          "path": "/user/hand/right/input/cursorpad",
-          "mode": "button",
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse/in/leftclick"
-            }
-          }
-        },
-        {
-          "path": "/user/hand/right/input/cursorpad",
-          "mode": "button",
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse/in/LockMousePosition"
-            }
-          }
-        },
-        {
-          "path": "/user/hand/right/input/trackpad",
-          "mode": "button",
-          "inputs": {
-            "click": {
-              "output": "/actions/lasermouse/in/rightclick"
-            }
-          }
         }
       ]
     },

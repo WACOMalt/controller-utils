@@ -12,12 +12,4 @@ dist/
 !.env.example
 *.key
 *.pem
-!assets/update-public.pem
-!tests/fixtures/update-metadata/public.pem
-latest.json
-latest.sig
-!tests/fixtures/update-metadata/latest.json
-!tests/fixtures/update-metadata/latest.sig
 controller-utils-*-linuxarm64.tar.gz
-compatibility-profile-*.bin
-SHA256SUMS

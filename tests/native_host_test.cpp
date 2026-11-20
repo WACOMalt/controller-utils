@@ -6,7 +6,6 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
-#include <libunwind.h>
 
 namespace {
 namespace j = ct::json;
@@ -20,28 +19,25 @@ struct Log {
     bool system_closed = false;
     uint32_t system_tap = 0;
 };
-struct MaintenanceFixture {
+struct CameraSwitchFixture {
     unsigned launches = 0;
-    bool destroyed = false, unavailable = false;
+    bool destroyed = false;
     std::optional<int> status;
     std::vector<std::string> messages;
-    std::vector<std::string> sent;
 };
-class MaintenanceChild final : public ct::ChildChannel {
-    std::shared_ptr<MaintenanceFixture> fixture_;
+class CameraSwitchChild final : public ct::ChildChannel {
+    std::shared_ptr<CameraSwitchFixture> fixture_;
 
   public:
-    explicit MaintenanceChild(std::shared_ptr<MaintenanceFixture> fixture)
+    explicit CameraSwitchChild(std::shared_ptr<CameraSwitchFixture> fixture)
         : fixture_(std::move(fixture)) {}
-    ~MaintenanceChild() override {
+    ~CameraSwitchChild() override {
         fixture_->destroyed = true;
     }
     std::optional<int> exit_status() override {
         return fixture_->status;
     }
-    void send(const std::string &message) override {
-        fixture_->sent.push_back(message);
-    }
+    void send(const std::string &) override {}
     std::vector<j::Value> poll() override {
         std::vector<j::Value> result;
         for (const auto &message : fixture_->messages)
@@ -125,10 +121,6 @@ size_t descriptors() {
 }
 } // namespace
 int main() {
-    // Initialize libunwind's process-wide probe pipe before descriptor checks.
-    void *frames[32];
-    if (unw_backtrace(frames, 32) <= 0)
-        return 1;
     const auto root =
         std::filesystem::current_path() / "build" / ("native-host-" + std::to_string(getpid()));
     const auto app = root / "app", data = root / "app-data";
@@ -174,7 +166,7 @@ int main() {
         });
         reader.poll(true);
         ct::ui::Presentation presentation;
-        auto camera = std::make_shared<MaintenanceFixture>();
+        auto camera = std::make_shared<CameraSwitchFixture>();
         const auto child_factory =
             [&](const std::vector<std::string> &command) -> std::unique_ptr<ct::ChildChannel> {
             if (command.back() != "--camera-switch-worker")
@@ -183,7 +175,7 @@ int main() {
                                                         "--camera-switch-worker"}));
             ++camera->launches;
             camera->destroyed = false;
-            return std::make_unique<MaintenanceChild>(camera);
+            return std::make_unique<CameraSwitchChild>(camera);
         };
         ct::NativeApplicationHost host(runtime, reader, lock, presentation, app, data,
                                        child_factory, steam_ui(log));
@@ -235,7 +227,7 @@ int main() {
                 while (presentation.running() && std::chrono::steady_clock::now() < deadline) {
                     for (const auto &message : presentation.commands()) {
                         status |= std::holds_alternative<ct::ui::Status>(message);
-                        updates |= std::holds_alternative<ct::ui::Updates>(message);
+                        updates |= std::holds_alternative<ct::ui::AppInfo>(message);
                         if (const auto op = std::get_if<ct::ui::Operation>(&message))
                             show |= *op == ct::ui::Operation::ShowSettings;
                     }
@@ -280,8 +272,7 @@ int main() {
         assert(log->keyboard_requests == 2);
         host.close_keyboard();
         assert(log->keyboard_closed);
-        assert(!j::boolean(j::field(host.updates(false).get(), "configured")));
-        host.confirm_update();
+        assert(j::string(j::field(host.app_info().get(), "version")) == "0.1.0");
         host.close();
         assert(!presentation.running());
     }
@@ -312,85 +303,6 @@ int main() {
         assert(host.keyboard_error() == "The focused window is no longer available");
         assert(keyboard_shown() == 2);
         host.close();
-    }
-    {
-        reset();
-        auto maintenance = std::make_shared<MaintenanceFixture>();
-        ct::ApplicationLock lock(data / "app.lock");
-        ct::Runtime runtime(false, library);
-        ct::ControllerReader reader;
-        ct::ui::Presentation presentation;
-        ct::ChildFactory factory = [maintenance](const std::vector<std::string> &args) {
-            ++maintenance->launches;
-            if (maintenance->unavailable)
-                throw std::runtime_error("maintenance unavailable");
-            assert(args.size() == 4 && args[0] == "/usr/bin/sudo" && args[1] == "-n" &&
-                   args[2] == "/var/lib/controller-utils/controller-utils-updater" &&
-                   (args[3] == "--repair" || args[3] == "--repair-status"));
-            maintenance->messages.clear();
-            maintenance->status.reset();
-            return std::make_unique<MaintenanceChild>(maintenance);
-        };
-        ct::NativeApplicationHost host(runtime, reader, lock, presentation, app, data, factory, {},
-                                       [] {});
-        assert(maintenance->launches == 1);
-        assert(host.permission_repair_status() == "Restoring helper permissions.");
-        host.request_permission_repair();
-        host.request_permission_inspection();
-        assert(maintenance->launches == 1 && maintenance->sent.empty());
-        assert(host.events().empty() && host.running());
-        rejects([&] { host.confirm_update(); });
-        maintenance->status = 0;
-        assert(host.permission_repair_status() == "Helper permissions are ready.");
-        const auto begin = [&](bool inspection) {
-            if (inspection)
-                host.request_permission_inspection();
-            else
-                host.request_permission_repair();
-            assert(host.permission_repair_status() ==
-                   (inspection ? "Checking helper permissions." : "Restoring helper permissions."));
-        };
-        begin(true);
-        maintenance->messages = {R"({"op":"repair-status","status":"missing"})"};
-        maintenance->status = 0;
-        assert(host.permission_repair_status() ==
-               "Helper permissions are missing. Repair is available.");
-        begin(true);
-        maintenance->messages = {R"({"op":"repair-status","status":"intact"})",
-                                 R"({"op":"repair-status","status":"intact"})"};
-        assert(host.permission_repair_status() == "Permission inspection failed.");
-        begin(true);
-        maintenance->messages = {R"({"op":"repair-status","status":"unexpected"})"};
-        assert(host.permission_repair_status() == "Permission inspection failed.");
-        begin(true);
-        maintenance->messages = {"{"};
-        assert(host.permission_repair_status() == "Permission inspection failed.");
-        begin(true);
-        maintenance->status = 0;
-        assert(host.permission_repair_status() == "Permission inspection failed.");
-        for (int exit : {1, 126, 127}) {
-            begin(false);
-            maintenance->status = exit << 8;
-            assert(host.permission_repair_status() ==
-                   "Permission maintenance failed. Review the installation.");
-        }
-        maintenance->unavailable = true;
-        host.request_permission_repair();
-        assert(host.permission_repair_status() == "Permission maintenance is unavailable.");
-        maintenance->unavailable = false;
-        begin(false);
-        maintenance->messages = {R"({"op":"repair-ready"})"};
-        assert(host.permission_repair_status() == "Permission inspection failed.");
-        assert(maintenance->sent.empty());
-        begin(false);
-        maintenance->status = 0;
-        assert(host.permission_repair_status() == "Helper permissions are ready.");
-        maintenance->destroyed = false;
-        const auto before_close = maintenance->launches;
-        host.request_permission_repair();
-        host.close();
-        assert(maintenance->destroyed && maintenance->sent.empty() &&
-               maintenance->launches == before_close + 1);
     }
     for (const auto failure :
          {"CT_TEST_OPENVR_IDENTIFY_FAILURE", "CT_TEST_OPENVR_STARTUP_FAILURE"}) {

@@ -1,7 +1,6 @@
 #include "runtime.h"
 #include "compatibility.h"
-#include "queue_api.h"
-#include "platform/linux/files.h"
+#include "module.h"
 #include <array>
 #include <cstring>
 #include <dlfcn.h>
@@ -45,21 +44,6 @@ Runtime::~Runtime() {
         std::cerr << error.what() << '\n';
     }
 }
-std::vector<Runtime::Device> Runtime::devices() {
-    if (!initialized_)
-        throw std::logic_error("OpenVR runtime is closed");
-    std::array<vr::TrackedDevicePose_t, 64> poses{};
-    system->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, 0, poses.data(),
-                                            poses.size());
-    std::vector<Device> result;
-    for (uint32_t index = 0; index < poses.size(); ++index) {
-        const auto &pose = poses[index];
-        if (pose.bDeviceIsConnected)
-            result.push_back({index, int(system->GetTrackedDeviceClass(index)), pose.bPoseIsValid,
-                              int(pose.eTrackingResult)});
-    }
-    return result;
-}
 std::string Runtime::serial(uint32_t index) {
     if (!initialized_)
         throw std::logic_error("OpenVR runtime is closed");
@@ -101,19 +85,6 @@ std::optional<unsigned> Runtime::primary_dashboard_device() {
     }
     return std::nullopt;
 }
-QueueContext &Runtime::queues() {
-    if (!initialized_)
-        throw std::logic_error("OpenVR runtime is closed");
-    if (!queues_) {
-        const auto table = interface("FnTable:IVRBlockQueue_005");
-        const auto module = steamvr::Module::loaded(table, steamvr::compatibility::VrClient.path);
-        auto queue = std::make_unique<steamvr::QueueApi>(table, module);
-        auto context = std::make_unique<QueueContext>(*queue);
-        queue_api_ = std::move(queue);
-        queues_ = std::move(context);
-    }
-    return *queues_;
-}
 uint64_t Runtime::path_handle(const char *name) {
     if (!name || !*name)
         throw std::invalid_argument("OpenVR path is empty");
@@ -127,16 +98,6 @@ uint64_t Runtime::path_handle(const char *name) {
     return handle;
 }
 void Runtime::close() {
-    std::exception_ptr failure;
-    if (queues_) {
-        try {
-            queues_->close();
-        } catch (...) {
-            failure = std::current_exception();
-        }
-        queues_.reset();
-    }
-    queue_api_.reset();
     if (initialized_) {
         initialized_ = false;
         shutdown_();
@@ -147,15 +108,5 @@ void Runtime::close() {
         dlclose(library_);
         library_ = nullptr;
     }
-    if (failure)
-        std::rethrow_exception(failure);
-}
-void check_runtime(const std::string &directory) {
-    const auto &binary = steamvr::compatibility::XrService;
-    if (!steamvr::compatibility::supported_xr_service(
-            sha256(std::filesystem::path(directory) /
-                   std::filesystem::path(binary.path).lexically_relative("/opt/steamvr"))))
-        throw std::runtime_error(std::string(binary.name) +
-                                 " changed. Native protocol must be reverified");
 }
 } // namespace ct

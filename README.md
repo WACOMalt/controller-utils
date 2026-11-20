@@ -1,8 +1,9 @@
 # Controller Utils
 
-Adds support for tracking the 2026 Steam Controller on Steam Frame over Bluetooth.
-It uses Frame's native tracking services to track position through the controller's
-IR LED, and the controller's IMU for orientation.
+Tracks the 2026 Steam Controller on Steam Frame over Bluetooth. Controller Utils
+reads the shared tracking-camera buffers, triangulates the controller's IR LED,
+and uses a palm model to initialize heading. The controller's IMU keeps rotation
+and short movements responsive between camera fixes.
 
 The app displays a 3D controller model in VR. You can navigate Steam's UI with a
 laser pointer or touchpad cursor, and type with both touchpads. Steam Controller
@@ -10,43 +11,35 @@ tracking also works while Frame's own controllers are being tracked.
 
 ![Controller Utils running on Steam Frame](docs/controller-utils.png)
 
-Tracking relies on a single IR LED. It can become unstable or drift when the LED
-is hidden from the headset's cameras. Position tracking recovers when you hold
-the controller with the LED visible to the headset again.
-
-The app supports the latest stable and beta SteamOS releases.
-Since the driver interfaces directly with Frame's native tracking services,
-SteamOS and SteamVR updates can break tracking and require an app update. I'll try
-to maintain this at least until Valve releases official tracking support for the
-Steam Controller.
-
-The app is experimental.
+The shared-camera build has separate packages for SteamOS stable and beta.
+The installer checks the active channel and the SteamVR interfaces used by the
+pointer. Build or update beta independently of the last working stable package.
 
 ## Install
 
-Open a terminal on Frame and run:
+Unpack the ARM64 package for your SteamOS channel. Run the installer as the
+`steamos` user over SSH so it can finish while Steam and SteamVR restart.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packaging/bootstrap.py | python3 -
+python3 install.py --check --calibration /path/to/camera-calibration.json
+python3 install.py --calibration /path/to/camera-calibration.json
 ```
 
-The script detects your SteamOS channel, downloads the latest release, verifies
-it and installs the app.
-Installation asks for confirmation and your password, then briefly restarts
-SteamVR. Set a password with `passwd` first if you haven't already.
+The installer reuses this headset's saved camera calibration when available.
+For a new profile, run `python3 app/optical/frame_camera_calibration.py` with an
+existing factory-calibration snapshot directory and save its output to a JSON
+file. Tracking does not start a camera recording. Fresh setups may ask for
+administrator access to install the Steam Controller udev rule.
 
-Open Controller Utils from Frame's app drawer (+). Pair your gamepad with Frame,
-leave Enable tracking on and follow the headset prompts.
-
-The app starts with SteamVR after its first launch. Change this in App settings.
-For an existing installation, use updates or uninstall before installing again.
+Pair the controller with Frame, then open Controller Utils from the app drawer (+).
+The app can start with SteamVR after its first launch. Change this in App settings.
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
 | R4 | Toggle UI control, configurable in Controls |
-| Right pad | Move the cursor, release to return to the laser |
+| Right pad | Move the cursor with the beam hidden. Lift your thumb to restore it |
 | Right trigger or right pad click | Click |
 | Left trigger | Right-click |
 | Right stick or left pad | Scroll |
@@ -67,48 +60,38 @@ With UI control on, look at the keyboard and touch either pad to type. Both pads
 control the typing cursors. Typing stays active while you look away. Release both
 pads to aim again.
 
-## Updates and removal
+## Updates
 
-Enable Automatic updates in App settings to download signed GitHub releases.
-For a manual check, select Check now. Updates install when SteamVR next starts. Later updates
-and permission repairs run without another password prompt.
-
-To uninstall, run:
-
-```sh
-~/.local/share/controller-utils/app/uninstall.sh
-```
-
-If an older uninstall stopped partway through, run the latest signed uninstaller:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/kallupx/controller-utils/main/packaging/bootstrap.py | python3 - --uninstall
-```
-
-Removal asks for administrator access. Updates and removal keep settings and
-per-controller calibration in `~/.local/share/controller-utils/app-data`.
-
-For installations using the old `controllertracking` directory, uninstall with
-`~/.local/share/controllertracking/app/uninstall.sh`, then run the install command
-above. The installer moves the saved settings and calibration to the new directory.
+Install a newer package for your current channel using the same installer.
+Settings and controller calibration live in
+`~/.local/share/controller-utils/app-data`. A copy of the previous app and
+configuration stays on the headset. The install disables the old IR tracker's
+update service if it was enabled.
 
 ## Build
 
-The [CI workflow](.github/workflows/checks.yml) lists the required compilers,
-libraries and tools. With those installed:
+The [CI workflow](.github/workflows/checks.yml) lists the compiler and library
+dependencies. For ARM64 packages, use an Ubuntu 24.04 ARM64 build environment.
+Build dependencies from a recent beta SteamOS install can produce a binary that
+requires a newer libc than stable provides.
 
 ```sh
-python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-export PATH="$PWD/.venv/bin:$PATH"
-make -j4 all
-make check-format
-make check
-make -j4 check-sanitize
+python3 tools/frame_sdk.py build/frame-sdk
+make -j4 frame-optical CPPFLAGS=-Ibuild/frame-sdk
+python3 tools/stage_frame.py --channel stable \
+  --output build/controller-utils-frame-stable \
+  --archive build/controller-utils-frame-stable-linuxarm64.tar.gz
 ```
 
-Desktop builds support automated tests. Headset binaries require ARM64 and
-Frame-compatible system libraries.
+Use `--channel beta` and a different output path to build the beta package.
+The [Frame packages workflow](.github/workflows/release.yml) builds and uploads
+only the selected channel's archive. App, driver and hook binaries use the same
+ARM64 build baseline. Each archive records its channel, SteamOS build ID and
+file checksums. The build ID records the tested SteamOS version. Use
+`--build-id` to record a different tested build.
+
+`make check` runs the desktop tests, including the shared-camera and input
+regressions.
 
 ## License
 

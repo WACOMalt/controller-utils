@@ -78,28 +78,20 @@ bool retryable(const std::exception &error) {
         dynamic_cast<const std::system_error *>(&error))
         return true;
     const std::string text(error.what());
-    for (const auto prefix :
-         {"Headset asleep", "Put the Frame on", "connect one Steam Controller",
-          "Wake a Frame VR controller",
-          "Wake the left Frame controller once to initialize native tracking.", "Put Frame on",
-          "Turn off the right Frame controller", "Turn off the regular right Frame controller",
-          "Native tracking session stopped", "Native tracking mode helper stopped",
-          "Native tracking app heartbeat stopped", "Native compatibility helper stopped",
-          "Native tracking service restarted", "Controller IMU stream stopped",
-          "sensor clock reset or long input gap"})
+    for (const auto prefix : {"Headset asleep", "Put the Frame on", "connect one Steam Controller",
+                              "Put Frame on", "Camera worker stopped", "Controller IMU stopped",
+                              "sensor clock reset or long input gap"})
         if (text.rfind(prefix, 0) == 0)
             return true;
     return false;
 }
 
-Application::Application(ApplicationHost &host, const Settings &options,
-                         std::optional<std::string> runtime_problem, bool background,
+Application::Application(ApplicationHost &host, const Settings &options, bool background,
                          std::function<double()> monotonic, std::function<double()> raw)
     : host_(host), options_(options), monotonic_(monotonic ? std::move(monotonic) : monotonic_time),
-      raw_(raw ? std::move(raw) : raw_time), runtime_problem_(std::move(runtime_problem)),
-      status_(runtime_problem_.value_or(options.tracking_enabled ? "Waiting for controller"
-                                                                 : "Tracking off")),
-      show_settings_(!background), startup_(monotonic_()) {
+      raw_(raw ? std::move(raw) : raw_time),
+      status_(options.tracking_enabled ? "Waiting for controller" : "Tracking off"),
+      show_settings_(!background) {
     host_.autostart(options_.autostart);
     host_.save(options_);
 }
@@ -135,7 +127,7 @@ bool Application::action(json_object *event) {
         host_.autostart(!options_.autostart);
         options_.autostart = !options_.autostart;
         host_.save(options_);
-    } else if (name == "input_toggle" && !host_.recovery_active())
+    } else if (name == "input_toggle")
         send_op("input_toggle");
     else if (name == "pinned") {
         options_.pinned = !options_.pinned;
@@ -154,31 +146,10 @@ bool Application::action(json_object *event) {
             capture_.reset();
         else
             capture_.emplace(monotonic_());
-    } else if (name == "automatic_updates") {
-        options_.automatic_updates = !options_.automatic_updates;
-        host_.save(options_);
-    } else if (name == "check_updates")
-        host_.check_updates();
-    else if (name == "inspect_permissions")
-        host_.request_permission_inspection();
-    else if (name == "repair_permissions")
-        host_.request_permission_repair();
-    else if (name == "recenter" && host_.recovery_active()) {
-        try {
-            host_.open_uninstaller();
-        } catch (const std::exception &error) {
-            recovery_error_ = error.what();
-        }
     } else if (name == "recenter" && session_) {
         session_->recenter();
         send_op("hide");
-    } else if (name == "acquire" && host_.recovery_active()) {
-        try {
-            host_.retry_recovery();
-        } catch (const std::exception &error) {
-            recovery_error_ = error.what();
-        }
-    } else if (name == "acquire" && options_.tracking_enabled && !runtime_problem_) {
+    } else if (name == "acquire" && options_.tracking_enabled) {
         send_op("hide");
         return true;
     } else if (name == "brightness_down" || name == "brightness_up" || name == "smoothing_down" ||
@@ -219,11 +190,8 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
             capture_.reset();
         }
     }
-    const bool recovery = host_.recovery_active();
-    if (recovery)
-        runtime_problem_ = recovery_error_.value_or(host_.recovery_message());
     const bool system_requested =
-        !recovery && awake && connected && !capture_ && !(options_.pointer_buttons & 0x10000);
+        awake && connected && !capture_ && !(options_.pointer_buttons & 0x10000);
     bool allow = false;
     try {
         allow = host_.system_input(system_requested);
@@ -361,7 +329,7 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
             status_ = "Waiting for gamepad. Connect it to Frame by Bluetooth.";
         else if (!awake)
             status_ = "Put Frame on to start tracking.";
-        if (options_.tracking_enabled && awake && connected && !runtime_problem_ && !session_ &&
+        if (options_.tracking_enabled && awake && connected && !session_ &&
             monotonic_() >= retry_) {
             session_ = host_.track(options_);
             if (!session_)
@@ -437,8 +405,8 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
             &system_status_,    &animation_status_, &keyboard_status_};
         const auto count = std::count_if(problems.begin(), problems.end(),
                                          [](const auto *problem) { return bool(*problem); });
-        std::string display = runtime_problem_.value_or(tracking_problem_.value_or(status_));
-        if (!runtime_problem_ && count) {
+        std::string display = tracking_problem_.value_or(status_);
+        if (count) {
             display.clear();
             for (const auto *problem : problems) {
                 if (!*problem)
@@ -453,29 +421,12 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
         put(value.get(), "gamepad_connected", connected);
         const auto *input = session_ ? &session_->input_state() : nullptr;
         put(value.get(), "status_attention",
-            runtime_problem_ || count ||
-                (input &&
-                 (input->error || (keyboard_.typing && input->keyboard_health == "recovering"))));
-        put(value.get(), "tracking_available", !runtime_problem_);
-        if (host_.recovery_active())
-            put(value.get(), "recovery", true);
+            count || (input && (input->error ||
+                                (keyboard_.typing && input->keyboard_health == "recovering"))));
         put(value.get(), "binding_capture", bool(capture_));
         put(value.get(), "pointer_label", ui_text(binding_label(options_.pointer_buttons), 120));
         host_.send(std::move(value));
-        host_.send(host_.updates(options_.automatic_updates));
-        if (running_)
-            host_.send(host_.permission_status());
-        if (!update_confirmed_ && now - startup_ >= 1) {
-            try {
-                host_.confirm_update();
-                update_confirmed_ = true;
-            } catch (const std::exception &error) {
-                if (!dynamic_cast<const std::system_error *>(&error) &&
-                    !dynamic_cast<const std::invalid_argument *>(&error))
-                    throw;
-                host_.log("Controller Utils update confirmation: " + std::string(error.what()));
-            }
-        }
+        host_.send(host_.app_info());
         last_status_ = now;
     }
 }

@@ -54,9 +54,7 @@ struct AlignmentOverlay {
         cairo_stroke(c);
         const std::string title = ready                   ? "Gamepad ready"
                                   : error                 ? "Gamepad tracking needs attention"
-                                  : state == "waiting"    ? "Turn on your gamepad"
                                   : state == "connecting" ? "Connecting gamepad"
-                                  : state == "imu"        ? "Hold your gamepad still"
                                   : state == "palm"       ? "Finding your gamepad"
                                   : state == "realign"    ? "Set gamepad heading"
                                   : state == "restart"    ? "Keep holding to restart"
@@ -64,11 +62,7 @@ struct AlignmentOverlay {
         Dashboard::text(c, 184, 39, "STEAM CONTROLLER", 18, 0x8b929a);
         Dashboard::text(c, 184, 84, title, 32);
         Dashboard::wrapped(c, 184, 126, message, 875, 2, 23, 0xb8bcbf);
-        const int step = state == "ready"         ? 4
-                         : state == "stabilizing" ? 3
-                         : state == "palm"        ? 2
-                         : state == "imu"         ? 1
-                                                  : 0;
+        const int step = state == "ready" ? 4 : state == "palm" ? 2 : 0;
         const char *labels[] = {"Connect", "Motion", "Palm + LED", "Aligned"};
         for (int i = 0; i < 4; ++i) {
             Dashboard::color(c, i < step ? accent : 0x3d4450);

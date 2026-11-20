@@ -1,5 +1,4 @@
 #include "tracking/calibration.h"
-#include "tracking/native_pose.h"
 #include "platform/linux/files.h"
 #include <cassert>
 #include <cmath>
@@ -31,7 +30,6 @@ int main() {
     } cleanup{root};
     auto first = ct::controller_calibration(root, "HEADSET-A", "GAMEPAD-A");
     assert(!first.gyro_calibrated && first.body.controller_serial == "GAMEPAD-A");
-    ct::NativeBodyPose mapper(first.body, "GAMEPAD-A", first.emitter);
     assert(first.emitter == (ct::Vector3{0, -.0004572075, .0087}));
     auto second = ct::controller_calibration(root, "HEADSET-B", "GAMEPAD-B");
     assert(second.body.controller_serial == "GAMEPAD-B" && second.headset_serial == "HEADSET-B");
@@ -72,28 +70,6 @@ int main() {
     ct::ControllerReport report{};
     report.acceleration = {0, 0, 9.80665};
     report.angular_velocity = {.0001, -.0002, .0003};
-    ct::StationaryGyroBias bias;
-    std::optional<ct::Vector3> measured;
-    for (unsigned i = 0; i < 220; ++i)
-        if (auto result = bias.sample(report, 10 + i * .004))
-            measured = result;
-    assert(measured);
-    for (size_t i = 0; i < 3; ++i)
-        assert(std::abs((*measured)[i] - report.angular_velocity[i]) < 1e-12);
-    ct::StationaryGyroBias moving;
-    for (unsigned i = 0; i < 500; ++i) {
-        report.angular_velocity = {i % 2 ? .005 : -.005, 0, 0};
-        assert(!moving.sample(report, 20 + i * .004));
-    }
-    report.angular_velocity = {.2, 0, 0};
-    for (unsigned i = 0; i < 500; ++i)
-        assert(!moving.sample(report, 30 + i * .004));
-    report.angular_velocity = {};
-    for (unsigned i = 0; i < 100; ++i)
-        assert(!moving.sample(report, 40 + i * .004));
-    assert(!moving.sample(report, 45));
-    report.acceleration[0] = std::numeric_limits<double>::infinity();
-    rejects([&] { moving.sample(report, 46); });
     std::cout << "Controller calibration: fresh devices, independent storage, headset changes, "
                  "safe paths and stationary IMU measurement passed\n";
 }

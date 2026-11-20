@@ -1,0 +1,258 @@
+#include "session_replay.h"
+#include "tracking/optical_session.h"
+#include <cassert>
+#include <fcntl.h>
+
+namespace {
+int64_t micros = 100000000;
+int pair_fd[2]{}, gate_fd[2]{}, beam_fd[2]{};
+class Camera final : public ct::ChildChannel {
+  public:
+    std::vector<ct::json::Value> events;
+    bool lit = false, stopped = false, guided = false;
+    unsigned restarts = 0;
+    std::optional<int> exit_status() override {
+        return {};
+    }
+    void send(const std::string &bytes) override {
+        auto msg = ct::json::parse(bytes);
+        const auto op = ct::json::string(ct::json::field(msg.get(), "op"));
+        if (op == "lit")
+            lit = true;
+        if (op == "reacquire")
+            ++restarts;
+        guided |= json_object_object_get_ex(msg.get(), "prior", nullptr);
+    }
+    std::vector<ct::json::Value> poll() override {
+        return std::exchange(events, {});
+    }
+    std::vector<ct::json::Value> close(const std::string &msg, double) override {
+        stopped = msg.find("stop") != std::string::npos;
+        return {};
+    }
+    void emit(const char *op, double time) {
+        auto msg = ct::json::parse(
+            R"({"transform":[1,0,0,0.1,0,1,0,-0.2,0,0,1,-0.5],"point":[0.1,-0.2,-0.5],"origin":[0,0,0],"direction":[0.236962,-0.360397,-0.902188]})");
+        json_object_object_add(msg.get(), "op", json_object_new_string(op));
+        json_object_object_add(msg.get(), "time", json_object_new_double(time));
+        events.push_back(std::move(msg));
+    }
+};
+} // namespace
+extern "C" int __real_clock_gettime(clockid_t, timespec *);
+extern "C" int __wrap_clock_gettime(clockid_t id, timespec *out) {
+    if (id != CLOCK_MONOTONIC && id != CLOCK_MONOTONIC_RAW)
+        return __real_clock_gettime(id, out);
+    *out = {micros / 1000000, (micros % 1000000) * 1000};
+    return 0;
+}
+extern "C" int __wrap_connect(int fd, const sockaddr *addr, socklen_t) {
+    assert(addr->sa_family == AF_UNIX);
+    const auto &socket = *reinterpret_cast<const sockaddr_un *>(addr);
+    if (std::strstr(socket.sun_path + 1, ".beam.")) {
+        if (dup3(beam_fd[0], fd, O_CLOEXEC) < 0)
+            return -1;
+        close(std::exchange(beam_fd[0], -1));
+        return 0;
+    }
+    const bool gate = std::strstr(socket.sun_path + 1, ".input.");
+    return dup3(gate ? gate_fd[0] : pair_fd[0], fd, O_CLOEXEC) < 0 ? -1 : 0;
+}
+int main() {
+    assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, pair_fd) == 0);
+    assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, gate_fd) == 0);
+    assert(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_NONBLOCK | SOCK_CLOEXEC, 0, beam_fd) == 0);
+    session_replay::Runtime runtime;
+    runtime.dashboard_pointer = 3;
+    auto hid = std::make_shared<ct::test::FakeState>();
+    auto device =
+        std::make_shared<ct::ControllerDevice>(std::make_unique<ct::test::FakeTransport>(hid));
+    ct::TrackingCalibration cal{
+        "HEADSET", {1, "TEST1234", {{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}}, {}}, {0, .01, -.02}};
+    Camera *camera{};
+    auto filter = std::make_shared<session_replay::ChildState>();
+    auto log = ct::json::parse("[]");
+    auto *events = log.get();
+    double stamp = 0;
+    ct::OpticalSession session(
+        runtime, device, cal, {}, "/test",
+        [&](const std::vector<std::string> &args) -> std::unique_ptr<ct::ChildChannel> {
+            assert(args.at(2) == "/test/optical/frame_camera_worker.py" &&
+                   args.back() == "HEADSET");
+            auto child = std::make_unique<Camera>();
+            camera = child.get();
+            return child;
+        },
+        [&](const std::string &, bool) {
+            return std::make_unique<session_replay::SteamUi>(filter, stamp, events);
+        });
+    ct::optical::Packet packet{};
+    ct::ControllerInput report{};
+    report.report.acceleration = {0, 9.80665, 0};
+    bool ui = false, gate_ready = false;
+    auto step = [&] {
+        micros += 5000;
+        report.report.sensor_tick += 5000;
+        report.received = stamp = ct::monotonic_time();
+        session.controls(report, ui, false);
+        auto pose = session.step({report});
+        ct::optical::Packet next{};
+        while (recv(pair_fd[1], &next, sizeof(next), 0) == sizeof(next))
+            packet = next;
+        int32_t index;
+        if (gate_ready)
+            while (recv(gate_fd[1], &index, sizeof(index), 0) == sizeof(index)) {
+                assert(index == 0);
+                assert(send(gate_fd[1], &index, sizeof(index), 0) == sizeof(index));
+            }
+        return pose;
+    };
+    micros += 6000000;
+    assert(!step() && !hid->raw && hid->brightness == 25);
+    camera->emit("ready", ct::raw_time());
+    assert(!step() && hid->raw && hid->brightness == 0);
+    camera->emit("light", ct::raw_time());
+    for (int i = 0; i < 220; ++i)
+        assert(!step());
+    assert(camera->lit && hid->raw);
+    camera->emit("seed", ct::raw_time() - .25);
+    assert(!step() && !session.acquired());
+    camera->emit("led", ct::raw_time() - .075);
+    auto pose = step();
+    assert(session.acquired());
+    assert(pose && ct::distance(pose->position, {.1, 1.39, -.48}) < .0001);
+    assert(pose->position_time == ct::raw_time() && pose->time < pose->position_time - .07);
+    micros += 1000;
+    assert(!session.step({}));
+    for (int i = 0; i < 10; ++i)
+        assert(step());
+    assert((packet.input.flags & 2) && !(packet.input.flags & 1));
+    ui = true;
+    for (int i = 0; i < 4; ++i)
+        assert(step());
+    assert((packet.input.flags & 2) && !(packet.input.flags & 1));
+    gate_ready = true;
+    for (int i = 0; i < 4; ++i)
+        assert(step());
+    assert((packet.input.flags & 3) == 3);
+    report.report.buttons = 0x00200000;
+    for (int i = 0; i < 4; ++i)
+        assert(step());
+    int32_t target;
+    assert(recv(beam_fd[1], &target, sizeof(target), 0) == sizeof(target) && target == 3);
+    assert((packet.input.flags & 3) == 3 && (packet.input.buttons & 16u));
+    const auto pressure = [&](double force) {
+        report.report.right_pad[2] = force;
+        for (int i = 0; i < 3; ++i)
+            assert(step());
+        return bool(packet.input.buttons & 32u);
+    };
+    assert(!pressure(.09));
+    assert(pressure(.14));
+    assert(pressure(.09));
+    assert(!pressure(.06));
+    report.report.buttons = 0;
+    assert(step());
+    assert(recv(beam_fd[1], &target, sizeof(target), 0) == 0);
+    assert((packet.input.flags & 3) == 3);
+    assert(camera->guided);
+    const auto before_bearing = step();
+    assert(before_bearing);
+    for (int i = 0; i < 24; ++i) {
+        if (i % 6 == 0)
+            camera->emit("bearing", ct::raw_time() - .01);
+        const auto next = step();
+        assert(next && next->time == pose->time);
+    }
+    const auto after_bearing = step();
+    assert(after_bearing && after_bearing->position[0] > before_bearing->position[0] + .003);
+    camera->emit("led", ct::raw_time() - .01);
+    const auto before_loss = step();
+    assert(before_loss && before_loss->time > pose->time);
+    for (int i = 0; i < 40; ++i)
+        assert(step());
+    report.report.acceleration[0] = 2.8;
+    report.report.angular_velocity[1] = .25;
+    for (int i = 0; i < 56; ++i)
+        assert(step());
+    const auto moving = step();
+    assert(moving && moving->position[0] > before_loss->position[0] + .045);
+    assert(std::abs(ct::dot(moving->orientation, pose->orientation)) < .9999);
+    report.report.acceleration[0] = -3.8;
+    for (int i = 0; i < 96; ++i)
+        assert(step());
+    const auto reversed = step();
+    assert(reversed && reversed->position[0] < moving->position[0] - .04);
+    report.report.acceleration[0] = -6;
+    for (int i = 0; i < 180; ++i)
+        assert(step());
+    const auto still = step();
+    assert(still && ct::distance(still->position, pose->position) <= .350001);
+    assert((packet.input.flags & 3) == 3);
+    assert(packet.input.pose_time - moving->time > 1.);
+    report.report.acceleration[0] = 0;
+    micros += 80000;
+    report.report.sensor_tick += 80000;
+    assert(step());
+    for (int i = 0; i < 6; ++i)
+        assert(step());
+    const double returned = ct::raw_time() - .01;
+    camera->emit("led", returned);
+    auto recovered = step();
+    assert(recovered && recovered->time == returned);
+    assert(ct::distance(recovered->position, still->position) < .02);
+    for (int i = 0; i < 31; ++i)
+        recovered = step();
+    assert(recovered && ct::distance(recovered->position, pose->position) < .03);
+    ui = false;
+    assert(step() && step());
+    assert(!(packet.input.flags & 1));
+
+    runtime.head = ct::rigid_pose({std::cos(.27), 0, std::sin(.27), 0}, {0, 1.6, 0});
+    report.report.angular_velocity = {};
+    const auto before_heading = step();
+    report.report.buttons = 0x4040;
+    for (int i = 0; i < 240; ++i)
+        assert(step());
+    const auto ready = session.presentation();
+    assert(ct::json::string(ct::json::field(ready.get(), "state")) == "restart");
+    assert(before_heading && camera->restarts == 0);
+    report.report.buttons = 0;
+    const auto aligned = step();
+    assert(aligned && aligned->time == before_heading->time && camera->restarts == 0);
+    const auto back = ct::rotate(aligned->orientation, {0, 0, 1});
+    assert(std::abs(std::atan2(back[0], back[2]) - .54) < 1e-6);
+
+    report.report.buttons = 0x4040;
+    for (int i = 0; i < 1000; ++i)
+        assert(step());
+    const auto old_seed = ct::raw_time() - .02;
+    assert(step() && camera->restarts == 1 && session.guide.started && !session.acquired());
+    camera->emit("seed", old_seed);
+    for (int i = 0; i < 40; ++i)
+        assert(step());
+    assert(camera->restarts == 1 && session.guide.started);
+    report.report.buttons = 0;
+    const double fresh_led = ct::raw_time() - .03;
+    camera->emit("led", fresh_led);
+    const auto during_restart = step();
+    assert(during_restart && during_restart->time == fresh_led && session.guide.started);
+    camera->emit("seed", ct::raw_time() - .12);
+    const auto restarted = step();
+    assert(restarted && restarted->time == fresh_led && camera->restarts == 1 &&
+           !session.guide.started && session.acquired());
+    session.close();
+    assert(camera->stopped && !hid->raw && hid->brightness == 25);
+    close(pair_fd[0]);
+    close(pair_fd[1]);
+    close(gate_fd[0]);
+    close(gate_fd[1]);
+    close(beam_fd[1]);
+
+    ct::InertialPosition drift;
+    drift.sample(1, {}, 0);
+    assert(drift.observe(1, {}, 1));
+    for (int i = 1; i <= 400; ++i)
+        drift.sample(1 + i * .01, {.22, 0, 0}, 0);
+    assert(ct::norm(*drift.value(5)) < .05);
+}

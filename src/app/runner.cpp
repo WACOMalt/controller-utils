@@ -3,12 +3,8 @@
 
 namespace ct {
 int run_application(NativeApplicationHost &host, Runtime &runtime, ControllerReader &reader,
-                    SignalQueue &signals, const std::filesystem::path &data, bool background,
-                    std::optional<std::string> runtime_problem) {
-    if (!runtime_problem)
-        runtime_problem = host.tracking_problem();
-    Application application(host, load_settings(data / "settings.json"), std::move(runtime_problem),
-                            background);
+                    SignalQueue &signals, const std::filesystem::path &data, bool background) {
+    Application application(host, load_settings(data / "settings.json"), background);
     std::exception_ptr failure;
     try {
         while (application.running() && host.running()) {

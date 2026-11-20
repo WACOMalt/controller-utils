@@ -9,7 +9,7 @@
 #include "interaction/pose_math.h"
 #include "steamvr/runtime.h"
 #include "steamvr/controller_input.h"
-#include "steamvr/queue_api.h"
+#include "steamvr/module.h"
 #include "steamvr/compatibility.h"
 
 inline double native_time() {

@@ -56,7 +56,6 @@ Settings Settings::from_json(json_object *value) {
     result.autostart = flag("autostart", result.autostart);
     result.pinned = flag("pinned", result.pinned);
     result.steam_shortcuts = flag("steam_shortcuts", result.steam_shortcuts);
-    result.automatic_updates = flag("automatic_updates", result.automatic_updates);
     json_object *binding = nullptr;
     if (json_object_object_get_ex(value, "pointer_buttons", &binding)) {
         if (!binding || json_object_get_type(binding) != json_type_int ||
@@ -79,8 +78,6 @@ json::Value Settings::to_json() const {
     json_object_object_add(result.get(), "pointer_buttons", json_object_new_int64(pointer_buttons));
     json_object_object_add(result.get(), "steam_shortcuts",
                            json_object_new_boolean(steam_shortcuts));
-    json_object_object_add(result.get(), "automatic_updates",
-                           json_object_new_boolean(automatic_updates));
     return result;
 }
 } // namespace ct

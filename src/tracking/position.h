@@ -35,5 +35,7 @@ class InertialPosition {
     std::optional<State> at(double timestamp) const;
     std::optional<Vector3> value(double now) const;
     bool observe(double timestamp, const Vector3 &point, double received, double confidence = 1);
+    void correct_bearing(double timestamp, const Vector3 &origin, const Vector3 &ray,
+                         const Vector3 &emitter, double received);
 };
 } // namespace ct

@@ -1,9 +1,6 @@
 #include "codec.h"
-#include "platform/json.h"
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <limits>
 #include <stdexcept>
 
 namespace ct {
@@ -38,69 +35,9 @@ InputControls input_controls(const ControllerReport &state) {
     result.stick_touch = (buttons & 0x20) || std::hypot(stick[0], stick[1]) > .08;
     return result;
 }
-std::string controller_profile(const std::string &serial) {
-    if (serial.empty() || std::any_of(serial.begin(), serial.end(), [](unsigned char c) {
-            return !((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'));
-        }))
-        throw std::invalid_argument("invalid controller serial");
-    return R"({"device_class":"controller","device_serial_number":"controllerutils-sc26-)" +
-           serial +
-           R"(","manufacturer":"Valve","model_number":"ibex_ev1","revision":2,"tracked_controller_role":"right_hand","imu":{"plus_x":[1,0,0],"plus_z":[0,0,1],"position":[0,0,0]},"lighthouse_config":{"modelPoints":[[0,0,0]],"modelNormals":[[0,0,1]]}})";
-}
-wire::Command bridge_event(bool connected, uint64_t hardware_id, const std::string &onboard,
-                           const std::string &defaults) {
-    if (onboard.size() >= 12288 || defaults.size() >= 12288)
-        throw std::invalid_argument("controller configuration exceeds event capacity");
-    auto first = json::parse(onboard, 12287), second = json::parse(defaults, 12287);
-    if (json_object_get_type(first.get()) != json_type_object ||
-        json_object_get_type(second.get()) != json_type_object)
-        throw std::invalid_argument("controller configurations must be objects");
-    auto first_serial = json::find(first.get(), "device_serial_number");
-    auto second_serial = json::find(second.get(), "device_serial_number");
-    if (!first_serial || !second_serial || json_object_get_type(first_serial) != json_type_string ||
-        json_object_get_type(second_serial) != json_type_string)
-        throw std::invalid_argument("configurations need the same bounded serial number");
-    const auto serial = json::string(first_serial);
-    if (serial.empty() || serial.find('\0') != std::string::npos || serial.size() > 96 ||
-        serial != json::string(second_serial))
-        throw std::invalid_argument("configurations need the same bounded serial number");
-    wire::Command command{};
-    command.magic = wire::Magic;
-    command.kind = 4;
-    command.size = wire::EventSize;
-    command.onboard_size = uint32_t(onboard.size());
-    command.default_size = uint32_t(defaults.size());
-    const wire::EventHeader header{wire::ControllerId, uint32_t(connected), hardware_id};
-    std::memcpy(command.data, &header, sizeof(header));
-    std::memcpy(command.data + 16, onboard.data(), onboard.size());
-    std::memcpy(command.data + 16 + 12288, defaults.data(), defaults.size());
-    return command;
-}
-wire::Command bridge_imu(double timestamp, const Vector3 &acceleration,
-                         const Vector3 &angular_velocity) {
-    if (!std::isfinite(timestamp) || !finite(acceleration) || !finite(angular_velocity))
-        throw std::invalid_argument("invalid bridge IMU sample");
-    for (const auto &values : {acceleration, angular_velocity})
-        for (double value : values)
-            if (std::abs(value) > std::numeric_limits<float>::max())
-                throw std::out_of_range("float too large to pack with f format");
-    wire::Imu sample{};
-    sample.id = wire::ControllerId;
-    sample.time = timestamp;
-    for (size_t i = 0; i < 3; ++i) {
-        sample.acceleration[i] = float(acceleration[i]);
-        sample.gyro[i] = float(angular_velocity[i]);
-    }
-    wire::Command command{};
-    command.magic = wire::Magic;
-    command.kind = 2;
-    command.size = sizeof(sample);
-    std::memcpy(command.data, &sample, sizeof(sample));
-    return command;
-}
-wire::Command bridge_input(double session_start, double timestamp,
-                           const std::optional<BodyPoseMessage> &pose,
-                           const InputControls &controls, bool enabled) {
+wire::AppInput bridge_input(double session_start, double timestamp,
+                            const std::optional<BodyPoseMessage> &pose,
+                            const InputControls &controls, bool enabled) {
     const double pose_time = pose ? pose->time : 0;
     const Quaternion orientation = pose ? pose->orientation : Quaternion{1, 0, 0, 0};
     const Vector3 position = pose ? pose->position : Vector3{};
@@ -138,55 +75,6 @@ wire::Command bridge_input(double session_start, double timestamp,
     for (size_t i = 0; i < buttons.size(); ++i)
         if (buttons[i])
             input.buttons |= 1u << i;
-    wire::Command command{};
-    command.magic = wire::Magic;
-    command.kind = 3;
-    command.size = sizeof(input);
-    std::memcpy(command.data, &input, sizeof(input));
-    return command;
-}
-wire::Status decode_status(const uint8_t *data, size_t size) {
-    if (size != sizeof(wire::Status))
-        throw std::invalid_argument("incorrect bridge status size");
-    wire::Status result;
-    std::memcpy(&result, data, sizeof(result));
-    if (result.magic != wire::Magic || (result.version != 2 && result.version != 3) ||
-        !std::isfinite(result.last_input) || !std::isfinite(result.last_pose) ||
-        !std::isfinite(result.session_start))
-        throw std::invalid_argument("invalid bridge status");
-    return result;
-}
-NativePoseInput decode_pose(const uint8_t *data, size_t size) {
-    if (size != sizeof(wire::PoseBlock))
-        throw std::invalid_argument("incorrect pose block size");
-    wire::PoseBlock block;
-    std::memcpy(&block, data, sizeof(block));
-    if (!std::isfinite(block.timestamp))
-        throw std::invalid_argument("non-finite pose timestamp");
-    NativePoseInput result;
-    result.controller_id = block.controller_id;
-    result.timestamp = block.timestamp;
-    if (block.timestamp < 0)
-        return result;
-    for (const auto *values : {block.orientation, block.position, block.velocity,
-                               block.angular_velocity, block.acceleration}) {
-        const size_t count = values == block.orientation ? 4 : 3;
-        for (size_t i = 0; i < count; ++i)
-            if (!std::isfinite(values[i]))
-                throw std::invalid_argument("non-finite pose data");
-    }
-    Quaternion q{};
-    Vector3 position{};
-    std::copy_n(block.orientation, 4, q.begin());
-    std::copy_n(block.position, 3, position.begin());
-    if (std::abs(dot(q, q) - 1) > .02)
-        throw std::invalid_argument("invalid pose quaternion");
-    result.valid = true;
-    result.orientation = q;
-    result.position = position;
-    std::copy_n(block.velocity, 3, result.velocity.begin());
-    std::copy_n(block.angular_velocity, 3, result.angular_velocity.begin());
-    std::copy_n(block.acceleration, 3, result.acceleration.begin());
-    return result;
+    return input;
 }
 } // namespace ct

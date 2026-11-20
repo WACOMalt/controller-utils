@@ -195,9 +195,7 @@ int main() {
         event.eventType = vr::VREvent_MouseButtonUp;
         if (dashboard.pointer(event) || dashboard.hovered)
             throw std::runtime_error("dashboard pointer leave failed");
-        accept_text(
-            dashboard,
-            R"({"op":"updates","version":"0.1.0","message":"Update server is not configured.","automatic":true,"configured":false,"busy":false})");
+        accept_text(dashboard, R"({"op":"app_info","version":"0.1.0"})");
         const auto check_layout = [&](cairo_surface_t *surface) {
             cairo_surface_flush(surface);
             const auto data = cairo_image_surface_get_data(surface);
@@ -288,14 +286,6 @@ int main() {
         cairo_surface_destroy(image);
         if (rc != CAIRO_STATUS_SUCCESS)
             throw std::runtime_error("dashboard image failed");
-        dashboard.recovery = true;
-        dashboard.tracking_available = false;
-        dashboard.gamepad_connected = false;
-        if (!dashboard.hit(320, 310) || std::string(dashboard.hit(320, 310)) != "recenter" ||
-            !dashboard.hit(900, 310) || std::string(dashboard.hit(900, 310)) != "acquire")
-            throw std::runtime_error("recovery actions are unavailable");
-        dashboard.recovery = false;
-        dashboard.tracking_available = true;
         dashboard.enabled = true;
         if (dashboard.hit(320, 310) || dashboard.hit(900, 310))
             throw std::runtime_error("tracking actions enabled without gamepad");
@@ -305,10 +295,6 @@ int main() {
             throw std::runtime_error("connected tracking actions unavailable");
         if (dashboard.hit(320, 345) || dashboard.hit(900, 345))
             throw std::runtime_error("shortcut note became a button");
-        dashboard.tracking_available = false;
-        if (dashboard.hit(900, 310) || !dashboard.hit(320, 190))
-            throw std::runtime_error("tracking preference blocked by runtime compatibility");
-        dashboard.tracking_available = true;
         dashboard.status = "Tracking starts automatically when your gamepad connects.";
         image = dashboard.paint();
         check_layout(image);
@@ -327,25 +313,7 @@ int main() {
         cairo_surface_destroy(image);
         if (controls_rc != CAIRO_STATUS_SUCCESS)
             throw std::runtime_error("controls image failed");
-        accept_text(
-            dashboard,
-            R"({"op":"updates","version":"0.1.0","message":"Version 0.1.1 is ready. Reopen the app to install.","automatic":true,"configured":true,"busy":false})");
         dashboard.page = 2;
-        accept_text(dashboard,
-                    R"({"op":"repair_status","message":"Authentication required.","busy":false})");
-        if (std::string(dashboard.hit(300, 650)) != "inspect_permissions" ||
-            std::string(dashboard.hit(800, 650)) != "repair_permissions")
-            throw std::runtime_error("permission actions are not reachable");
-        accept_text(
-            dashboard,
-            R"({"op":"repair_status","message":"Waiting for authentication.","busy":true})");
-        if (dashboard.hit(300, 650) || dashboard.hit(800, 650))
-            throw std::runtime_error("permission actions remained active during authentication");
-        accept_text(
-            dashboard,
-            R"({"op":"repair_status","message":"Authentication is required to check or repair permissions.","busy":false})");
-        if (std::string(dashboard.hit(960, 510)) != "check_updates")
-            throw std::runtime_error("update button hit test failed");
         image = dashboard.paint();
         check_layout(image);
         cairo_surface_flush(image);
@@ -362,9 +330,7 @@ int main() {
         cairo_surface_destroy(image);
         if (app_rc != CAIRO_STATUS_SUCCESS)
             throw std::runtime_error("app settings image failed");
-        accept_text(
-            dashboard,
-            R"({"op":"updates","version":"0.1.0","message":"Update server is not configured.","automatic":true,"configured":false,"busy":false})");
+        accept_text(dashboard, R"({"op":"app_info","version":"0.1.0"})");
         image = dashboard.paint();
         const auto offline_rc =
             cairo_surface_write_to_png(image, "build/dashboard-app-preview.png");
@@ -376,16 +342,6 @@ int main() {
         check_layout(image);
         cairo_surface_destroy(image);
         dashboard.hovered = nullptr;
-        dashboard.update_status =
-            "An update is ready. Reopen Controller Utils when you're finished to install it. Your "
-            "controller settings and headset calibration will be kept.";
-        image = dashboard.paint();
-        check_layout(image);
-        const auto wrapped_rc =
-            cairo_surface_write_to_png(image, "build/dashboard-app-wrap-check.png");
-        cairo_surface_destroy(image);
-        if (wrapped_rc != CAIRO_STATUS_SUCCESS)
-            throw std::runtime_error("wrapped settings image failed");
         AlignmentOverlay alignment(dashboard);
         accept_text(
             alignment,

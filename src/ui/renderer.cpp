@@ -254,8 +254,8 @@ struct Scene {
         dashboard.events();
         dashboard.render(head.has_value());
         const auto display_pose = pose.in_standing(origin.value_or(ct::identity()));
-        bool valid = active && (!pose.raw || origin.has_value()) && pose.fresh(native_time(), 1.) &&
-                     head.has_value();
+        bool valid =
+            active && origin.has_value() && pose.fresh(native_time(), 1.) && head.has_value();
         if (valid) {
             float distance = 0;
             for (int i = 0; i < 3; ++i)

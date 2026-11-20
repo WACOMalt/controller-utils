@@ -4,6 +4,5 @@
 
 namespace ct {
 int run_application(NativeApplicationHost &host, Runtime &runtime, ControllerReader &reader,
-                    SignalQueue &signals, const std::filesystem::path &data, bool background,
-                    std::optional<std::string> runtime_problem = std::nullopt);
+                    SignalQueue &signals, const std::filesystem::path &data, bool background);
 } // namespace ct

@@ -52,7 +52,7 @@ Vector3 OrientationFilter::body_vector(const Vector3 &value) const {
     return {dot(mount[0], value), dot(mount[1], value), dot(mount[2], value)};
 }
 void OrientationFilter::sample(const ControllerReport &imu, double received, double frame_offset,
-                               const std::optional<RigidPose> &head) {
+                               const std::optional<RigidPose> &head, double gravity_gain) {
     const auto &acceleration = imu.acceleration, &angular = imu.angular_velocity;
     if (!finite(acceleration) || !finite(angular) ||
         std::any_of(acceleration.begin(), acceleration.end(),
@@ -113,7 +113,7 @@ void OrientationFilter::sample(const ControllerReport &imu, double received, dou
         if (gravity > .9 * 9.80665 && gravity < 1.1 * 9.80665) {
             const auto measured = unit(up);
             if (dot(measured, predicted) > std::cos(20 * std::acos(-1.) / 180))
-                corrected = add(corrected, scale(cross(measured, predicted), 2));
+                corrected = add(corrected, scale(cross(measured, predicted), gravity_gain));
         }
         orientation = integrate(*orientation, corrected, dt);
     }

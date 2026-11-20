@@ -26,8 +26,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             g++ make pkg-config libegl1-mesa-dev libgl1-mesa-dev libegl-mesa0 libgl1-mesa-dri \
-            libjson-c-dev libssl-dev libunwind-dev libarchive-dev libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev libsystemd-dev libboost-dev \
-            fonts-noto-core nodejs desktop-file-utils tmux clang lld llvm qemu-user-static
+            libjson-c-dev libssl-dev libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev libboost-dev libsystemd-dev \
+            fonts-noto-core nodejs
           python -m pip install --requirement requirements-dev.txt
       - name: Check formatting and lint
         run: make check-format
@@ -37,41 +37,3 @@ jobs:
         run: make check
       - name: Check native memory and undefined behavior
         run: make -j2 check-sanitize
-
-  privileged-updates:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            g++ clang lld llvm make pkg-config libegl1-mesa-dev libgl1-mesa-dev \
-            libjson-c-dev libssl-dev libcurl4-openssl-dev libarchive-dev libunwind-dev libsystemd-dev libboost-dev \
-            libcairo2-dev libfontconfig1-dev fonts-noto-core nodejs desktop-file-utils tmux
-      - name: Build ARM64 application and release contents
-        run: |
-          make -j4 all native-tracker build/release_check
-          python3 tools/stage_release.py --output build/release-stage --requirements build/release-requirements.json
-      - name: Verify installation and interrupted update recovery
-        run: |
-          make -j4 build/update_installer_test build/sanitize/update_installer_test build/update_setup_test build/sanitize/update_setup_test build/resilience_maintenance_repair build/sanitize/resilience_maintenance_repair
-          sudo ./build/update_installer_test
-          sudo env ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 ./build/sanitize/update_installer_test
-      - name: Check installer privilege separation
-        run: |
-          sudo python3 -m unittest discover -s tests -p test_install_updates.py -v
-          sudo env CONTROLLER_UTILS_INSTALLER_SANITIZE=1 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 python3 -m unittest discover -s tests -p test_install_updates.py -v
-      - name: Save unsigned ARM64 release contents
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: controller-utils-linuxarm64-${{ github.sha }}
-          path: |
-            build/release-stage/
-            build/release-requirements.json
-            build/release_check
-          if-no-files-found: error
-          retention-days: 7

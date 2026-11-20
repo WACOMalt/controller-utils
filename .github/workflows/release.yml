@@ -1,170 +1,56 @@
-name: Release
+name: Frame packages
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      channel:
+        description: SteamOS channel for the package
+        type: choice
+        required: true
+        options:
+          - stable
+          - beta
+      build_id:
+        description: SteamOS build ID override for the selected channel
+        required: false
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: controller-utils-release
-  cancel-in-progress: false
-
 jobs:
-  publication:
-    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'kallupx/controller-utils'
-    runs-on: ubuntu-24.04
-    outputs:
-      needed: ${{ steps.state.outputs.needed }}
-    steps:
-      - name: Check whether the release is already published
-        id: state
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          if gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > release.json 2> release-error.txt
-          then
-            python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          print("needed=" + str(json.load(open("release.json"))["draft"]).lower())
-          PY
-          elif grep -q 'HTTP 404' release-error.txt
-          then
-            echo 'needed=true' >> "$GITHUB_OUTPUT"
-          else
-            cat release-error.txt >&2
-            exit 1
-          fi
-  release:
-    needs: publication
-    if: needs.publication.outputs.needed == 'true'
+  package:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
-    environment: release
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: "3.14"
-      - name: Check release tag
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          python - <<'PY'
-          import json, os
-          release = json.load(open("release.json"))
-          assert os.environ["RELEASE_TAG"] == "v" + release["version"], "Tag must match release.json"
-          PY
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            g++ clang lld llvm make pkg-config libegl1-mesa-dev libgl1-mesa-dev libegl-mesa0 libgl1-mesa-dri \
-            libjson-c-dev libssl-dev libunwind-dev libarchive-dev libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev libsystemd-dev libboost-dev \
-            fonts-noto-core nodejs desktop-file-utils tmux qemu-user-static
-          python -m pip install --requirement requirements-dev.txt
-      - name: Build and verify
-        run: |
-          make check-format
-          make -j4 all native-tracker build/release_check
-          make check
-          sudo ./build/update_installer_test
-          sudo python3 -m unittest discover -s tests -p test_install_updates.py -v
-          make -j4 check-sanitize
-          sudo env CONTROLLER_UTILS_INSTALLER_SANITIZE=1 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 python3 -m unittest discover -s tests -p test_install_updates.py -v
-          python tools/stage_release.py --output build/release-stage --requirements build/release-requirements.json
-      - name: Require a newer release sequence
-        run: |
-          status=$(curl --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            --connect-timeout 5 --max-time 30 --max-filesize 65536 \
-            --output build/previous.json --write-out '%{http_code}' \
-            https://github.com/kallupx/controller-utils/releases/latest/download/latest.json)
-          case "$status" in
-            200)
-              tag=$(python - <<'PY'
-          import json, re
-          version = json.load(open("build/previous.json"))["version"]
-          assert re.fullmatch(r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}", version)
-          print("v" + version)
-          PY
-              )
-              curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-                --connect-timeout 5 --max-time 30 --max-filesize 64 \
-                --output build/previous.sig \
-                "https://github.com/kallupx/controller-utils/releases/download/$tag/latest.sig"
-              openssl pkeyutl -verify -pubin -inkey assets/update-public.pem -rawin \
-                -in build/previous.json -sigfile build/previous.sig
-              python - <<'PY'
-          import json
-          previous = json.load(open("build/previous.json"))
-          current = json.load(open("release.json"))
-          assert type(previous["sequence"]) is int and 0 < previous["sequence"] < 2**63, "Invalid previous release sequence"
-          assert current["sequence"] > previous["sequence"], "Increase release.json sequence"
-          assert tuple(map(int, current["version"].split("."))) > tuple(map(int, previous["version"].split("."))), "Increase release.json version"
-          PY
-              ;;
-            404) ;;
-            *) echo "Could not read the current release" >&2; exit 1 ;;
-          esac
-      - name: Sign complete release
+            g++ make pkg-config libegl1-mesa-dev libgl1-mesa-dev libjson-c-dev libssl-dev \
+            libcairo2-dev libfontconfig1-dev libcurl4-openssl-dev \
+            libboost-dev libsystemd-dev python3
+      - name: Build and verify the selected package
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          FRAME_CHANNEL: ${{ inputs.channel }}
+          FRAME_BUILD: ${{ inputs.build_id }}
         run: |
-          umask 077
-          keyfile="$RUNNER_TEMP/controller-utils-signing.pem"
-          trap 'rm -f "$keyfile"' EXIT
-          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$keyfile"
-          python tools/package_release.py \
-            --app-stage build/release-stage --requirements build/release-requirements.json \
-            --key "$keyfile" --output dist
-          artifact=$(python -c 'import json; print(json.load(open("dist/latest.json"))["artifact"])')
-          (cd dist && sha256sum "$artifact" latest.json latest.sig latest-stable.json latest-stable.sig > SHA256SUMS)
-          if test -f build/previous.json
-          then
-            cp -a build/release-stage build/update-test-stage
-            python - <<'PY'
-          import json
-          from pathlib import Path
-          previous = json.load(open("build/previous.json"))
-          path = Path("build/update-test-stage/release.json")
-          baseline = json.loads(path.read_text())
-          baseline.update(version=previous["version"], sequence=previous["sequence"])
-          path.write_text(json.dumps(baseline, indent=2) + "\n")
-          PY
-            python tools/package_release.py \
-              --app-stage build/update-test-stage --requirements build/release-requirements.json \
-              --key "$keyfile" --output build/update-test-feed \
-              --notes 'Signed baseline for testing automatic updates'
-          fi
-      - name: Save signed update test baseline
-        if: ${{ hashFiles('build/update-test-feed/latest.json') != '' }}
+          python3 tools/frame_sdk.py build/frame-sdk
+          make -j4 frame-optical build/optical_session_test build/tracked_input_test CPPFLAGS=-Ibuild/frame-sdk
+          ./build/optical_session_test
+          ./build/tracked_input_test
+          python3 -m unittest discover -s tests -p 'test_stage_frame.py'
+          name="controller-utils-frame-$FRAME_CHANNEL"
+          args=()
+          if test -n "${FRAME_BUILD:-}"; then args+=(--build-id "$FRAME_BUILD"); fi
+          python3 tools/stage_frame.py --channel "$FRAME_CHANNEL" \
+            --output "build/$name" --archive "build/$name-linuxarm64.tar.gz" "${args[@]}"
+      - name: Upload the selected channel package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: controller-utils-update-test-baseline-${{ github.ref_name }}
-          path: build/update-test-feed/
+          name: controller-utils-frame-${{ inputs.channel }}-${{ github.sha }}
+          path: build/controller-utils-frame-${{ inputs.channel }}-linuxarm64.tar.gz
           if-no-files-found: error
-          retention-days: 7
-      - name: Publish complete GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > build/release-draft.txt 2>build/release-error.txt
-          then
-            test "$(cat build/release-draft.txt)" = true
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Controller Utils $RELEASE_TAG" --generate-notes
-          fi
-          artifact=$(python -c 'import json; print(json.load(open("dist/latest.json"))["artifact"])')
-          gh release upload "$RELEASE_TAG" "dist/$artifact" dist/latest.json dist/latest.sig dist/latest-stable.json dist/latest-stable.sig dist/SHA256SUMS --clobber
-          gh release edit "$RELEASE_TAG" --draft=false --latest

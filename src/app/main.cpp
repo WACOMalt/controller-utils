@@ -1,16 +1,12 @@
 #include "runner.h"
 #include "steamvr/arcturus.h"
-#include "update/download.h"
 #include "ui/renderer.h"
-#include <charconv>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
 #include <sys/stat.h>
 
 int main(int argc, char **argv) {
-    if (argc == 2 && std::string(argv[1]) == "--update-download-worker")
-        return ct::update::download_worker();
     if (argc == 2 && std::string(argv[1]) == "--camera-switch-worker")
         return ct::camera_switch_worker();
     try {
@@ -26,24 +22,13 @@ int main(int argc, char **argv) {
         const auto executable = std::filesystem::canonical("/proc/self/exe");
         const auto root = executable.parent_path(), data = root.parent_path() / "app-data";
         ct::SignalQueue signals{SIGUSR1, SIGTERM, SIGINT, SIGHUP};
-        std::optional<int> inherited;
-        if (const auto value = std::getenv("CONTROLLER_UTILS_LOCK_FD")) {
-            const std::string text(value);
-            int descriptor = -1;
-            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), descriptor);
-            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-                throw std::invalid_argument("Invalid inherited Controller Utils app lock");
-            inherited = descriptor;
-            unsetenv("CONTROLLER_UTILS_LOCK_FD");
-        }
-        ct::ApplicationLock lock(data / "app.lock", inherited);
+        ct::ApplicationLock lock(data / "app.lock");
         if (registration) {
             if (!lock.primary())
                 throw std::runtime_error("Close Controller Utils before changing registration");
             const char *home = std::getenv("HOME");
             if (!home || home[0] != '/')
                 throw std::runtime_error("Cannot locate the application home directory");
-            ct::update::MaintenanceLock maintenance(data);
             if (std::string(argv[1]) == "--prepare-registration") {
                 ct::ApplicationRegistration::prepare(root, std::filesystem::canonical(home));
                 return 0;
@@ -69,13 +54,6 @@ int main(int argc, char **argv) {
             return 0;
         }
         lock.publish();
-        std::optional<std::string> runtime_problem;
-        try {
-            ct::check_runtime();
-        } catch (const std::exception &error) {
-            runtime_problem = "Native tracking is unavailable. Check for a compatible app update.";
-            std::cerr << "Controller Utils runtime: " << error.what() << '\n';
-        }
         ct::Runtime runtime(true);
         if (std::filesystem::exists(root / "controller-utils.vrmanifest")) {
             auto &api =
@@ -97,8 +75,7 @@ int main(int argc, char **argv) {
         std::thread control([&] {
             try {
                 ct::run_application(host, runtime, reader, signals, data,
-                                    argc == 2 && std::string(argv[1]) == "--background",
-                                    std::move(runtime_problem));
+                                    argc == 2 && std::string(argv[1]) == "--background");
             } catch (...) {
                 control_failure = std::current_exception();
             }

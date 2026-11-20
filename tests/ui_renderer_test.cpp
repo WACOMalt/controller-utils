@@ -60,7 +60,6 @@ int main() {
             ct::BodyPose pose;
             pose.optical_time = pose.orientation_time = pose.position_time = now;
             pose.model = {1, 0, 0, 0, 0, .8660254f, .5f, 0, 0, -.5f, .8660254f, 0, 0, 0, -.4f, 1};
-            pose.raw = true;
             presentation.send(pose);
             std::atomic<bool> rendered{false};
             std::thread stop([&] {

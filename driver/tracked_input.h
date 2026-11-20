@@ -209,7 +209,6 @@ class TrackedInput final : public vr::ITrackedDeviceServerDriver {
             if (input->CreatePoseComponent(container, "/pose/cursor", &tip) !=
                 vr::VRInputError_None)
                 throw std::runtime_error("cannot create native pointer pose");
-            // Match the existing gamepad ray: from its top edge along body -Z.
             if (!set_tip(TipCursor::offset()))
                 throw std::runtime_error("cannot set native pointer pose");
             release();
@@ -307,9 +306,9 @@ class TrackedInput final : public vr::ITrackedDeviceServerDriver {
         ok &= set_scalar(trigger_value, state.trigger, offset);
         ok &= set_boolean(trigger_click, trigger_down, offset);
         ok &= set_boolean(trigger_touch, state.trigger > .05f, offset);
-        ok &= set_scalar(grip_value, state.grip, offset);
-        ok &= set_boolean(grip_click, grip_down, offset);
-        ok &= set_boolean(grip_touch, state.grip > .05f, offset);
+        ok &= set_scalar(grip_value, state.scroll_click ? 1.f : state.grip, offset);
+        ok &= set_boolean(grip_click, grip_down || state.scroll_click, offset);
+        ok &= set_boolean(grip_touch, state.grip > .05f || state.scroll_click, offset);
         ok &= set_scalar(stick_x, state.stick_x, offset);
         ok &= set_scalar(stick_y, state.stick_y, offset);
         ok &= set_boolean(stick_click, state.stick_click, offset);
@@ -322,7 +321,7 @@ class TrackedInput final : public vr::ITrackedDeviceServerDriver {
         ok &= set_scalar(scroll_y, scroll_position[1], offset);
         ok &= set_boolean(scroll_touch, state.scroll_touch, offset);
         ok &= set_boolean(scroll_click, state.scroll_click, offset);
-        ok &= set_boolean(bumper, state.bumper, offset);
+        ok &= set_boolean(bumper, state.bumper || state.pad_click, offset);
         ok &= set_boolean(back, state.back, offset);
         if (!ok)
             yield();

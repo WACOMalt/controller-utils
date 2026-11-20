@@ -29,7 +29,7 @@ int main() {
     assert(std::get<Feedback>(*feedback).progress == .5);
     auto pose = parse_command(std::string(
         R"({"op":"native_pose","time":42,"position_time":42,"orientation_time":42,"position":[0,0,-0.4],"orientation":[1,0,0,0]})"));
-    assert(std::get<ct::BodyPose>(*pose).raw);
+    assert(std::get<ct::BodyPose>(*pose).optical_time == 42);
     for (
         const auto text :
         {R"({"op":"controls","time":1,"buttons":4294967296})",

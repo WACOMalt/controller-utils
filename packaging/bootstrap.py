@@ -321,7 +321,10 @@ def terminal_setup(data, package, uninstall):
                 env=env,
                 check=True,
             )
-        except OSError, subprocess.SubprocessError:
+        except (
+            OSError,
+            subprocess.SubprocessError,
+        ):
             shutil.rmtree(job)
             raise
         subprocess.run(

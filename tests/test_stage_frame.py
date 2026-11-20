@@ -55,6 +55,7 @@ class FramePackageTest(unittest.TestCase):
 
     def test_installer_and_worker_support_stable_python(self):
         scripts = [
+            ROOT / "packaging/bootstrap.py",
             ROOT / "packaging/frame_install.py",
             *(ROOT / "tools" / name for name in stage_frame.OPTICAL_FILES if name.endswith(".py")),
         ]

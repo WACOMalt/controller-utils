@@ -439,6 +439,7 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
             const auto prior = transform_point(inverse_pose(*head), led);
             json_object_object_add(msg.get(), "prior", json::value(prior));
         } else if (alignment && imu.orientation && imu.orientation_time &&
+                   wire::fresh_input_time(*imu.orientation_time, now) &&
                    now - *imu.orientation_time < .06 && fix && now - fix < .8) {
             if (const auto p = position.value(now)) {
                 const auto emitter = rotate(multiply(*alignment, *imu.orientation), cal.emitter);
@@ -479,13 +480,18 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
     else if (action == AlignmentAction::Heading)
         recenter();
     std::optional<BodyPoseMessage> result;
-    if (alignment && imu.orientation && imu.orientation_time && now - *imu.orientation_time < .15 &&
-        fix && fix <= *imu.orientation_time + .02) {
+    if (alignment && imu.orientation && imu.orientation_time &&
+        wire::fresh_input_time(*imu.orientation_time, now) && fix &&
+        fix <= *imu.orientation_time + .02) {
         auto p = position.value(now);
         if (p)
             result = BodyPoseMessage{fix, now, *p, *imu.orientation_time,
                                      multiply(*alignment, *imu.orientation)};
     }
+    if (result)
+        last_valid_pose = result;
+    else if (last_valid_pose && wire::fresh_input_time(last_valid_pose->orientation_time, now))
+        result = last_valid_pose;
     const bool wanted = result && input.enabled && input.received && mono - *input.received < .15;
     bool claim = wanted && filter && mono >= filter_retry;
     if (claim && !input_gate) {

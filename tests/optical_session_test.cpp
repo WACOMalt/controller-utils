@@ -299,6 +299,17 @@ int main() {
            reanchored->position[0] - previous->position[0] > 2.2);
     const auto checkpoint = session.checkpoint();
     assert(checkpoint);
+
+    const auto before_burst = step();
+    assert(before_burst);
+    report.report.sensor_tick += 42000;
+    micros += 5000;
+    assert(!step() && session.acquired() && (packet.input.flags & 2));
+    assert(packet.input.pose_time == before_burst->orientation_time);
+    micros += 50000;
+    const auto clock_recovered = step();
+    assert(clock_recovered && session.acquired() && camera->restarts == 2);
+
     session.close();
     assert(camera->stopped && !hid->raw && hid->brightness == 25);
 

@@ -13,16 +13,19 @@ struct AppInput {
 };
 static_assert(sizeof(AppInput) == 128);
 
+inline bool fresh_input_time(double time, double now) {
+    const double age = now - time;
+    return time > 0 && age >= -.02 && age <= .15;
+}
+
 inline bool app_input(const AppInput &value, double now, double previous, double session_start) {
     if (value.id != ControllerId || value.flags & ~7u ||
         ((value.flags & 4u) && !(value.flags & 1u)) || value.buttons & ~255u || value.reserved ||
-        value.session_start != session_start || !std::isfinite(value.time) ||
-        value.time < session_start || value.time <= previous || now - value.time < -.02 ||
-        now - value.time > .15 || !std::isfinite(value.pose_time))
+        value.session_start != session_start || value.time < session_start ||
+        value.time <= previous || !fresh_input_time(value.time, now))
         return false;
     if (value.flags & 2u) {
-        if (value.pose_time <= 0 || value.time - value.pose_time < -.02 ||
-            value.time - value.pose_time > .15)
+        if (!fresh_input_time(value.pose_time, value.time))
             return false;
     } else if (value.pose_time != 0)
         return false;

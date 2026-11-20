@@ -21,6 +21,7 @@ class OpticalSession final : public TrackingSessionView {
     InertialPosition position;
     PoseHistory heads;
     std::optional<Quaternion> alignment;
+    std::optional<BodyPoseMessage> last_valid_pose;
     std::optional<Vector3> last_up;
     std::optional<TrackingResume> resume;
     double resume_seen = 0, resume_still_since = 0, resume_motion_since = 0;

@@ -44,14 +44,14 @@ wire::AppInput bridge_input(double session_start, double timestamp,
     const std::array<double, 8> analog{controls.trigger,  controls.grip,    controls.stick_x,
                                        controls.stick_y,  controls.pad_x,   controls.pad_y,
                                        controls.scroll_x, controls.scroll_y};
-    if (!std::isfinite(session_start) || !std::isfinite(timestamp) || !std::isfinite(pose_time) ||
-        !finite(orientation) || !finite(position) || session_start <= 0 ||
-        timestamp < session_start || std::abs(dot(orientation, orientation) - 1) > .001 ||
+    if (!std::isfinite(session_start) || !std::isfinite(timestamp) || !finite(orientation) ||
+        !finite(position) || session_start <= 0 || timestamp < session_start ||
+        std::abs(dot(orientation, orientation) - 1) > .001 ||
         std::any_of(position.begin(), position.end(), [](double v) { return std::abs(v) > 20; }) ||
         std::any_of(analog.begin(), analog.end(), [](double v) { return !std::isfinite(v); }) ||
         analog[0] < 0 || analog[0] > 1 || analog[1] < 0 || analog[1] > 1 ||
         std::any_of(analog.begin() + 2, analog.end(), [](double v) { return std::abs(v) > 1; }) ||
-        (pose && (timestamp - pose_time < -.02 || timestamp - pose_time > .15)))
+        (pose && !wire::fresh_input_time(pose_time, timestamp)))
         throw std::invalid_argument("invalid native input state");
     wire::AppInput input{};
     input.id = wire::ControllerId;

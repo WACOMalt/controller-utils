@@ -22,6 +22,10 @@ class NativeApplicationHost final : public ApplicationHost {
     std::unique_ptr<SteamUiSession> keyboard_;
     std::unique_ptr<SteamUiSession> system_input_;
     std::unique_ptr<ChildChannel> camera_switch_;
+    std::unique_ptr<ChildChannel> update_job_;
+    std::optional<double> update_idle_;
+    double next_update_check_ = 0, update_started_ = 0;
+    std::string update_error_;
     std::string system_serial_;
     uint32_t system_tap_ = 0;
     std::optional<double> system_confirmed_;
@@ -50,6 +54,8 @@ class NativeApplicationHost final : public ApplicationHost {
     void request_keyboard() override;
     std::optional<std::string> keyboard_error() override;
     json::Value app_info() override;
+    json::Value update_info(bool automatic, bool idle) override;
+    void update(bool apply) override;
     void log(const std::string &message) override;
     void close_keyboard();
     void close();

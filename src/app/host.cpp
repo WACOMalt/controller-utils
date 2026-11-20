@@ -1,6 +1,7 @@
 #include "host.h"
 #include "tracking/optical_session.h"
 #include "platform/linux/files.h"
+#include <chrono>
 #include <exception>
 #include <iostream>
 
@@ -213,6 +214,76 @@ std::optional<std::string> NativeApplicationHost::keyboard_error() {
 json::Value NativeApplicationHost::app_info() {
     auto value = json::parse(R"({"op":"app_info"})");
     json_object_object_add(value.get(), "version", json_object_new_string(version_.c_str()));
+    return value;
+}
+void NativeApplicationHost::update(bool apply) {
+    const auto script = root_ / "frame_update.py";
+    if (update_job_ || !std::filesystem::is_regular_file(script))
+        return;
+    try {
+        update_job_ =
+            children_({"/usr/bin/systemd-run", "--user", "--quiet", "--collect", "--no-block",
+                       "--expand-environment=no", "--unit=controller-utils-frame-update",
+                       "/usr/bin/python3", "-B", script.string(), apply ? "apply" : "check"});
+        update_started_ = monotonic_time();
+        next_update_check_ = update_started_ + 12 * 60 * 60;
+        update_error_.clear();
+    } catch (const std::exception &error) {
+        log(error.what());
+        update_error_ = "Couldn’t start the update check.";
+        next_update_check_ = monotonic_time() + 60;
+    }
+}
+json::Value NativeApplicationHost::update_info(bool automatic, bool idle) {
+    if (!std::filesystem::is_regular_file(root_ / "frame_update.py"))
+        return {};
+    const auto now = monotonic_time();
+    if (!idle)
+        update_idle_.reset();
+    else if (!update_idle_)
+        update_idle_ = now;
+    if (update_job_)
+        if (const auto status = update_job_->exit_status()) {
+            if (*status != 0)
+                update_error_ = "Couldn’t start the update. Try again later.";
+            update_job_.reset();
+        }
+    std::string state, message = "Check for a new Controller Utils release.";
+    try {
+        const auto path = data_ / "frame-update.json";
+        if (std::filesystem::is_regular_file(path)) {
+            const auto value = json::parse(read_file(path, 4096), 4096);
+            state = json::string(json::field(value.get(), "state"));
+            message = json::string(json::field(value.get(), "message"));
+            if (message.size() > 180)
+                message = "Update status is unavailable.";
+            if (state == "busy" && std::filesystem::file_time_type::clock::now() -
+                                           std::filesystem::last_write_time(path) >
+                                       std::chrono::minutes(12)) {
+                state.clear();
+                message = "The update stopped. Check for updates to retry.";
+            }
+        }
+    } catch (const std::exception &error) {
+        log(error.what());
+    }
+    const bool starting = update_job_ || (update_started_ && now - update_started_ < 2);
+    if (automatic && !starting && state != "busy") {
+        if (state == "ready" && update_idle_ && now - *update_idle_ >= 30)
+            update(true);
+        else if (state != "ready" && now >= next_update_check_)
+            update(false);
+    }
+    const bool busy = starting || update_job_ || state == "busy";
+    if (!update_error_.empty())
+        message = update_error_;
+    else if (starting || update_job_)
+        message = "Starting update…";
+    json::Value value(json_object_new_object());
+    json_object_object_add(value.get(), "automatic", json_object_new_boolean(automatic));
+    json_object_object_add(value.get(), "busy", json_object_new_boolean(busy));
+    json_object_object_add(value.get(), "ready", json_object_new_boolean(state == "ready"));
+    json_object_object_add(value.get(), "message", json_object_new_string(message.c_str()));
     return value;
 }
 void NativeApplicationHost::log(const std::string &message) {

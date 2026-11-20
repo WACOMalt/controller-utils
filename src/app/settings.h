@@ -8,7 +8,7 @@ struct Settings {
     int brightness = 100, smoothing_ms = 20;
     bool tracking_enabled = true, autostart = true, pinned = true;
     uint32_t pointer_buttons = 0x80;
-    bool steam_shortcuts = true;
+    bool steam_shortcuts = true, automatic_updates = true;
     static Settings from_json(json_object *value);
     json::Value to_json() const;
 };

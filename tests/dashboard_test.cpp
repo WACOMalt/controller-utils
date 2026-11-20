@@ -218,14 +218,15 @@ int main() {
                                              std::to_string(x) + "," + std::to_string(y));
             };
             for (const auto &b : dashboard.buttons)
-                if (b.page == -1 || b.page == dashboard.page) {
+                if ((b.page == -1 || b.page == dashboard.page) &&
+                    std::string(b.action) != "apply_update") {
                     if (b.kind == Dashboard::Switch)
                         check_text(b.x + 24, b.y, b.w - 144, b.h);
                     else
                         check_text(b.x + 12, b.y, b.w - 24, b.h);
                 }
             if (dashboard.page == 2)
-                check_text(304, 458, 632, 104);
+                check_text(304, 458, 580, 104);
         };
         {
             Vr unused;
@@ -314,6 +315,14 @@ int main() {
         if (controls_rc != CAIRO_STATUS_SUCCESS)
             throw std::runtime_error("controls image failed");
         dashboard.page = 2;
+        dashboard.update = ct::ui::SoftwareUpdate{"Check for a new release.", true, false, false};
+        assert(std::string(dashboard.hit(320, 394)) == "automatic_updates");
+        assert(std::string(dashboard.hit(1000, 500)) == "check_updates");
+        dashboard.update->ready = true;
+        assert(std::string(dashboard.hit(1000, 500)) == "apply_update");
+        dashboard.update->busy = true;
+        assert(!dashboard.hit(1000, 500));
+        dashboard.update->ready = dashboard.update->busy = false;
         image = dashboard.paint();
         check_layout(image);
         cairo_surface_flush(image);

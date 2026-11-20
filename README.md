@@ -32,9 +32,11 @@ file. Tracking does not start a camera recording. Fresh setups may ask for
 administrator access to install the Steam Controller udev rule and keep it
 across SteamOS updates.
 
-Before upgrading from the Valve IR release, use that release's uninstaller to
-remove its privileged helper and updater. Keep `app-data` and copy any camera
-calibration stored inside the old app directory to a separate file first.
+To upgrade the published v0.2.0 Valve IR release, run the installer above over
+SSH and authorize its one-time administrator prompt. It validates the new
+package before using the original uninstaller to retire the old privileged
+services and rules. Settings and controller calibration stay in `app-data`.
+The installer can reuse a factory-calibration snapshot already on the headset.
 
 Pair the controller with Frame, then open Controller Utils from the app drawer (+).
 The app can start with SteamVR after its first launch. Change this in App settings.
@@ -67,9 +69,13 @@ pads to aim again.
 
 ## Updates
 
-Install a newer package for your current channel using the same installer.
-Settings and controller calibration live in
-`~/.local/share/controller-utils/app-data`. A copy of the previous app and
+Open **App** and select **Check for updates**. When a signed package is ready,
+select **Install update**. With **Automatic updates** enabled, Controller Utils
+checks in the background and installs when the Frame has been idle for 30
+seconds. Installation briefly restarts Steam and SteamVR.
+
+Each update matches the Frame’s current stable or beta channel. You can also
+run the installer for your channel over SSH. A copy of the previous app and
 configuration stays on the headset.
 
 To remove Controller Utils, choose **Exit app**, then run

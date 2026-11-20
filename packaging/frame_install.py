@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,22 @@ UNITS = Path.home() / ".local/share/systemd/user"
 RULE = Path("/etc/udev/rules.d/70-controller-utils.rules")
 KEEP = Path("/etc/atomic-update.conf.d/controller-utils-frame.conf")
 DESKTOP = Path.home() / ".local/share/applications/org.controllerutils.frame.desktop"
+DATASETS = Path.home() / ".config/openvr/config/cv/xrservice/datasets"
+LEGACY_UPDATER = Path("/var/lib/controller-utils/controller-utils-updater")
+LEGACY_UNIT = "controller-utils-update.service"
+LEGACY_UNIT_TEXT = """[Unit]
+Description=Install verified Controller Utils updates
+Before=steamvr.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/sudo -n /var/lib/controller-utils/controller-utils-updater --repair
+ExecStart=/usr/bin/sudo -n /var/lib/controller-utils/controller-utils-updater --apply
+TimeoutStartSec=180
+
+[Install]
+WantedBy=steamvr.service
+"""
 LEGACY = tuple(
     map(
         Path,
@@ -78,16 +95,32 @@ def verify_package(package):
     return record["channel"], record["steamos_build"]
 
 
-def calibration(source):
+def calibration(source, package=None):
     choices = (
         BASE / "app-data/camera-calibration.json",
         BASE / "app/optical/camera-calibration.json",
     )
     if source is None:
         source = next((path for path in choices if path.is_file()), None)
-    if source is None:
+    contents = source.read_bytes() if source is not None else None
+    if contents is None and package:
+        datasets = (
+            path.parent
+            for path in DATASETS.glob("*.dataset/sensorRigCalibration.json")
+            if (path.parent / "snapshots/BeginningSnapshot/cameraMetadata.json").is_file()
+            and (path.parent / f"{path.parent.stem}_device_config.json").is_file()
+        )
+        latest = max(datasets, default=None)
+        if latest:
+            contents = command(
+                sys.executable,
+                "-B",
+                package / "app/optical/frame_camera_calibration.py",
+                latest,
+                capture=True,
+            ).stdout.encode()
+    if contents is None:
         raise ValueError("Supply this headset's camera calibration with --calibration")
-    contents = source.read_bytes()
     if not 0 < len(contents) <= 131072:
         raise ValueError("Invalid calibration size")
     value = json.loads(contents)
@@ -171,12 +204,28 @@ def atomic_text(path, content, mode):
 
 
 def legacy_installation():
-    for item in LEGACY:
-        if item.exists() or item.is_symlink():
-            raise ValueError(
-                "Uninstall the previous Valve IR release with its original uninstaller first. "
-                "Keep app-data and a copy of this headset's camera calibration."
-            )
+    if not any(item.exists() or item.is_symlink() for item in LEGACY):
+        return False
+    if not LEGACY_UPDATER.is_file() or LEGACY_UPDATER.resolve() != LEGACY_UPDATER:
+        raise ValueError("The original Controller Utils uninstaller is missing.")
+    info = LEGACY_UPDATER.stat()
+    if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022:
+        raise ValueError("The original Controller Utils uninstaller is not root-owned.")
+    return True
+
+
+def retire_legacy(sources, receipt):
+    stop_services()
+    try:
+        command("sudo", str(LEGACY_UPDATER), "--uninstall")
+        if not policy_present(RULE, sources[RULE]):
+            command("sudo", "install", "-m", "0644", sources[RULE], RULE)
+            reload_rules()
+            owned = set(json.loads(receipt.read_text())) if receipt.is_file() else set()
+            atomic_text(receipt, json.dumps(sorted(owned | {RULE.name})), 0o600)
+    finally:
+        start_services()
+    ready()
 
 
 def validate_calibration(package, data, camera_config):
@@ -227,15 +276,18 @@ def service_files():
     )
 
 
-def install(package, camera_config):
+def install(package, camera_config, unattended=False):
     data, app = BASE / "app-data", BASE / "app"
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (data / "frame-install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         validate_calibration(package, data, camera_config)
         sources = policy_sources(package)
+        legacy = legacy_installation()
         missing = [path for path, source in sources.items() if not policy_present(path, source)]
-        if missing:
+        if unattended and (legacy or missing):
+            raise ValueError("This upgrade needs administrator authorization. Run install.py.")
+        if legacy or missing:
             command("sudo", "-v")
         driver = BASE / "native-driver"
         if (driver.exists() or driver.is_symlink()) and (
@@ -261,7 +313,7 @@ def install(package, camera_config):
                 saved = backup / item.name
                 shutil.copy2(item, saved)
                 old[item] = saved
-        updater = "controller-utils-update.service"
+        updater = LEGACY_UNIT
         legacy_enabled = systemctl("is-enabled", "--quiet", updater, check=False).returncode == 0
         moved = installed = driver_created = False
         created_policies = []
@@ -330,6 +382,16 @@ def install(package, camera_config):
             finally:
                 start_services()
             raise
+        if legacy:
+            retire_legacy(sources, receipt)
+        old_unit = UNITS / LEGACY_UNIT
+        if (
+            not old_unit.is_symlink()
+            and old_unit.is_file()
+            and old_unit.read_text() == LEGACY_UNIT_TEXT
+        ):
+            old_unit.unlink()
+            systemctl("daemon-reload")
     print(f"Controller Utils installed. Previous files are in {backup}.")
 
 
@@ -406,6 +468,7 @@ def main():
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--check", action="store_true", help="Check the Frame without installing")
     action.add_argument("--uninstall", action="store_true", help="Remove Controller Utils")
+    action.add_argument("--unattended", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if os.geteuid() == 0:
         raise ValueError("Run this installer as the Steam Frame user")
@@ -422,7 +485,6 @@ def main():
     if args.uninstall:
         uninstall(package)
         return
-    legacy_installation()
     installed = {
         key: value.strip('"')
         for key, _, value in (
@@ -433,7 +495,7 @@ def main():
         print(
             f"Package tested on SteamOS {build_id}. Running {installed.get('BUILD_ID', 'unknown')}."
         )
-    camera_config = calibration(args.calibration)
+    camera_config = calibration(args.calibration, package)
     command(package / "frame-compatibility")
     subprocess.run(
         [package / "app/optical/frame_palm_inference", PALM],
@@ -444,7 +506,7 @@ def main():
     if args.check:
         print(f"Frame {channel} package preflight passed")
     else:
-        install(package, camera_config)
+        install(package, camera_config, args.unattended)
 
 
 if __name__ == "__main__":

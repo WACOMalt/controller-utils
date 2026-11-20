@@ -127,6 +127,11 @@ bool Application::action(json_object *event) {
         host_.autostart(!options_.autostart);
         options_.autostart = !options_.autostart;
         host_.save(options_);
+    } else if (name == "automatic_updates") {
+        options_.automatic_updates = !options_.automatic_updates;
+        host_.save(options_);
+    } else if (name == "check_updates" || name == "apply_update") {
+        host_.update(name == "apply_update");
     } else if (name == "input_toggle")
         send_op("input_toggle");
     else if (name == "pinned") {
@@ -433,6 +438,8 @@ void Application::step(bool awake, bool connected, const std::vector<ControllerI
                                 (keyboard_.typing && input->keyboard_health == "recovering"))));
         put(value.get(), "binding_capture", bool(capture_));
         put(value.get(), "pointer_label", ui_text(binding_label(options_.pointer_buttons), 120));
+        if (auto update = host_.update_info(options_.automatic_updates, !awake))
+            json_object_object_add(value.get(), "update", update.release());
         host_.send(std::move(value));
         host_.send(host_.app_info());
         last_status_ = now;

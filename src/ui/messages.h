@@ -10,12 +10,17 @@ enum class Operation { ShowSettings, InputToggle, InputOff, Hide, Quit };
 struct KeyboardTyping {
     bool active;
 };
+struct SoftwareUpdate {
+    std::string message;
+    bool automatic, busy, ready;
+};
 struct Status {
     std::string message, pointer_label;
     bool enabled, binding_capture, steam_shortcuts, autostart, pinned;
     double brightness, smoothing;
     int pointer_buttons;
     std::optional<bool> gamepad_connected, status_attention;
+    std::optional<SoftwareUpdate> update;
 };
 struct AppInfo {
     std::string version;

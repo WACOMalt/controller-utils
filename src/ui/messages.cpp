@@ -73,6 +73,7 @@ std::optional<Command> command(json_object *object) {
                       blend,
                       int(binding),
                       {},
+                      {},
                       {}};
         for (const auto &entry : {std::pair{"gamepad_connected", &result.gamepad_connected},
                                   std::pair{"status_attention", &result.status_attention}}) {
@@ -80,6 +81,10 @@ std::optional<Command> command(json_object *object) {
             if (json_object_object_get_ex(object, entry.first, &value))
                 *entry.second = boolean(object, entry.first);
         }
+        if (auto update = json::find(object, "update"))
+            result.update =
+                SoftwareUpdate{text(update, "message", 180), boolean(update, "automatic"),
+                               boolean(update, "busy"), boolean(update, "ready")};
         return result;
     }
     if (op == "controls") {

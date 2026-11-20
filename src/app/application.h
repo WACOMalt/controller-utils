@@ -27,6 +27,10 @@ class ApplicationHost {
     virtual void request_keyboard() = 0;
     virtual std::optional<std::string> keyboard_error() = 0;
     virtual json::Value app_info() = 0;
+    virtual json::Value update_info(bool, bool) {
+        return {};
+    }
+    virtual void update(bool) {}
     virtual void log(const std::string &message) = 0;
 };
 

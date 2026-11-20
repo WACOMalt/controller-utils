@@ -38,7 +38,7 @@ class FramePackageTest(unittest.TestCase):
                     "verify_package": lambda _: ("stable", "20261022.6150929"),
                     "command": command,
                     "LEGACY": (),
-                    "calibration": lambda _: "{}",
+                    "calibration": lambda *args: "{}",
                 },
             ),
             patch.object(sys, "argv", ["install.py", "--check"]),
@@ -253,5 +253,63 @@ class FramePackageTest(unittest.TestCase):
             legacy = Path(directory) / "controller-utils-maintenance.service"
             legacy.touch()
             with patch.dict(detect.__globals__, LEGACY=(legacy,)):
-                with self.assertRaisesRegex(ValueError, "original uninstaller"):
+                with self.assertRaisesRegex(ValueError, "original Controller Utils uninstaller"):
                     detect()
+
+    def test_upgrade_from_legacy_preserves_settings_and_retires_old_services(self):
+        install = runpy.run_path(str(ROOT / "packaging/frame_install.py"))["install"]
+        code = install.__globals__
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, package = root / "installed", root / "package"
+            rule, keep = root / "70-controller-utils.rules", root / "controller-utils-frame.conf"
+            units = root / "systemd"
+            units.mkdir()
+            unit = units / code["LEGACY_UNIT"]
+            unit.write_text(code["LEGACY_UNIT_TEXT"])
+            (base / "app").mkdir(parents=True)
+            (base / "app/controller-utils").write_text("old app")
+            data = base / "app-data"
+            data.mkdir()
+            settings = data / "settings.json"
+            settings.write_text('{"automatic_updates":false}')
+            (package / "app/optical").mkdir(parents=True)
+            (package / "app/controller-utils").write_text("new app")
+            (package / "controller-utils").write_text("launcher")
+            for path in (rule, keep):
+                (package / path.name).write_text(path.name)
+            rule.write_text(rule.name)
+            calls = []
+
+            def command(*args, **kwargs):
+                calls.append(args)
+                if args[:2] == ("sudo", "install"):
+                    args[-1].write_bytes(args[-2].read_bytes())
+                if args == ("sudo", str(code["LEGACY_UPDATER"]), "--uninstall"):
+                    rule.unlink()
+                return SimpleNamespace(returncode=0)
+
+            with patch.dict(
+                code,
+                BASE=base,
+                UNITS=units,
+                DESKTOP=root / "app.desktop",
+                RULE=rule,
+                KEEP=keep,
+                legacy_installation=lambda: True,
+                validate_calibration=lambda *args: None,
+                ready=lambda: calls.append(("ready",)),
+                command=command,
+                systemctl=command,
+            ):
+                with self.assertRaisesRegex(ValueError, "administrator authorization"):
+                    install(package, "calibration", unattended=True)
+                self.assertFalse(calls)
+                install(package, "calibration")
+            retire = ("sudo", str(code["LEGACY_UPDATER"]), "--uninstall")
+            self.assertLess(calls.index(("ready",)), calls.index(retire))
+            self.assertTrue(rule.is_file() and keep.is_file())
+            self.assertFalse(unit.exists())
+            self.assertEqual((base / "app/controller-utils").read_text(), "new app")
+            self.assertEqual(settings.read_text(), '{"automatic_updates":false}')
+            self.assertEqual((data / "camera-calibration.json").read_text(), "calibration")

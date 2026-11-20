@@ -29,7 +29,12 @@ The installer reuses this headset's saved camera calibration when available.
 For a new profile, run `python3 app/optical/frame_camera_calibration.py` with an
 existing factory-calibration snapshot directory and save its output to a JSON
 file. Tracking does not start a camera recording. Fresh setups may ask for
-administrator access to install the Steam Controller udev rule.
+administrator access to install the Steam Controller udev rule and keep it
+across SteamOS updates.
+
+Before upgrading from the Valve IR release, use that release's uninstaller to
+remove its privileged helper and updater. Keep `app-data` and copy any camera
+calibration stored inside the old app directory to a separate file first.
 
 Pair the controller with Frame, then open Controller Utils from the app drawer (+).
 The app can start with SteamVR after its first launch. Change this in App settings.
@@ -65,8 +70,11 @@ pads to aim again.
 Install a newer package for your current channel using the same installer.
 Settings and controller calibration live in
 `~/.local/share/controller-utils/app-data`. A copy of the previous app and
-configuration stays on the headset. The install disables the old IR tracker's
-update service if it was enabled.
+configuration stays on the headset.
+
+To remove Controller Utils, choose **Exit app**, then run
+`python3 install.py --uninstall` from the package you installed. This removes
+the app and Steam integration and keeps your settings and calibration.
 
 ## Build
 

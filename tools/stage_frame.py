@@ -108,6 +108,7 @@ def stage(destination, channel, build_id=None):
         "frame-compatibility": "build/frame-compatibility",
         "install.py": "packaging/frame_install.py",
         "70-controller-utils.rules": "packaging/70-controller-utils.rules",
+        "controller-utils-frame.conf": "packaging/controller-utils-frame.conf",
     }
     executable = {
         "app/controller-utils",

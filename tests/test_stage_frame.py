@@ -36,6 +36,7 @@ class FramePackageTest(unittest.TestCase):
                 {
                     "verify_package": lambda _: ("stable", "20261022.6150929"),
                     "command": command,
+                    "LEGACY": (),
                     "calibration": lambda _: "{}",
                 },
             ),
@@ -118,6 +119,14 @@ class FramePackageTest(unittest.TestCase):
             rule = root / "70-controller-utils.rules"
             rule.write_bytes(b"udev rules")
             (package / rule.name).write_bytes(rule.read_bytes())
+            keep = root / "controller-utils-frame.conf"
+            (package / keep.name).write_text("retention")
+            desktop = root / "org.controllerutils.frame.desktop"
+
+            def command(*args, **kwargs):
+                if args[-1] == "--prepare-registration":
+                    desktop.write_text("new entry")
+
             config = base / "app-data/camera-calibration.json"
             config.parent.mkdir()
             config.write_text("previous calibration")
@@ -131,9 +140,13 @@ class FramePackageTest(unittest.TestCase):
                     "BASE": base,
                     "UNITS": root / "systemd",
                     "RULE": rule,
+                    "KEEP": keep,
+                    "DESKTOP": desktop,
                     "numpy_environment": lambda _: root / "numpy",
-                    "systemctl": lambda *args, **kwargs: SimpleNamespace(returncode=1),
-                    "command": lambda *args, **kwargs: None,
+                    "systemctl": lambda *args, **kwargs: SimpleNamespace(
+                        returncode=int(args[0] == "is-enabled")
+                    ),
+                    "command": command,
                     "ready": fail,
                 },
             ):
@@ -142,3 +155,86 @@ class FramePackageTest(unittest.TestCase):
             self.assertEqual((app / "controller-utils").read_bytes(), b"previous app")
             self.assertEqual(config.read_text(), "previous calibration")
             self.assertFalse((base / "native-driver").is_symlink())
+            self.assertFalse(desktop.exists())
+            self.assertFalse(keep.exists())
+
+    def test_restart_accepts_a_replacement_service_job(self):
+        code = runpy.run_path(str(ROOT / "packaging/frame_install.py"))["start_service"]
+        canceled = SimpleNamespace(returncode=1)
+        with (
+            patch.dict(
+                code.__globals__,
+                systemctl=lambda *a, **kw: (
+                    canceled if a[0] == "start" else SimpleNamespace(stdout=next(states))
+                ),
+            ),
+            patch("time.sleep"),
+        ):
+            states = iter(["activating", "active"])
+            code("steamvr.service")
+
+    def test_fresh_install_owns_and_removes_its_policy(self):
+        install = runpy.run_path(str(ROOT / "packaging/frame_install.py"))["install"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base, package = root / "installed", root / "package"
+            desktop = root / "org.controllerutils.frame.desktop"
+            rule, keep = root / "70-controller-utils.rules", root / "controller-utils-frame.conf"
+            (package / "app/optical").mkdir(parents=True)
+            (package / "app/controller-utils").write_text("app")
+            (package / "controller-utils").write_text("launcher")
+            for path in (rule, keep):
+                (package / path.name).write_text(path.name)
+            calls = []
+
+            def command(*args, **kwargs):
+                calls.append(args)
+                if args[-1] == "--prepare-registration":
+                    desktop.write_text("entry")
+                if args[-1] == "--register" and registration_fails:
+                    raise RuntimeError("registration failed")
+                if args[-1] == "--unregister":
+                    desktop.unlink()
+                if args[:2] == ("sudo", "install"):
+                    args[-1].write_bytes(args[-2].read_bytes())
+                if args[:2] == ("sudo", "rm"):
+                    for path in args[4:]:
+                        path.unlink(missing_ok=True)
+                return SimpleNamespace(returncode=int(args[0] == "is-enabled"))
+
+            with patch.dict(
+                install.__globals__,
+                BASE=base,
+                UNITS=root / "systemd",
+                DESKTOP=desktop,
+                RULE=rule,
+                KEEP=keep,
+                numpy_environment=lambda _: root / "numpy",
+                validate_calibration=lambda *args: None,
+                ready=lambda: None,
+                command=command,
+                systemctl=command,
+            ):
+                registration_fails = True
+                with self.assertRaisesRegex(RuntimeError, "registration failed"):
+                    install(package, "calibration")
+                self.assertFalse(any(path.exists() for path in (rule, keep, desktop, base / "app")))
+
+                registration_fails = False
+                install(package, "calibration")
+                self.assertTrue(all(path.is_file() for path in (rule, keep, desktop)))
+                install.__globals__["uninstall"](package)
+                self.assertTrue(any("removedriver" in call for call in calls))
+                self.assertFalse(any(path.exists() for path in (rule, keep, desktop, base / "app")))
+                self.assertEqual(
+                    (base / "app-data/camera-calibration.json").read_text(), "calibration"
+                )
+
+    def test_legacy_install_requires_its_ownership_checked_uninstaller(self):
+        detect = runpy.run_path(str(ROOT / "packaging/frame_install.py"))["legacy_installation"]
+        with tempfile.TemporaryDirectory() as directory:
+            legacy = Path(directory) / "controller-utils-maintenance.service"
+            legacy.touch()
+            with patch.dict(detect.__globals__, LEGACY=(legacy,)):
+                with self.assertRaisesRegex(ValueError, "original uninstaller"):
+                    detect()

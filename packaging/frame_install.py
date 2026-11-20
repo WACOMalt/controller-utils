@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,20 @@ PALM = Path(
 BASE = Path.home() / ".local/share/controller-utils"
 UNITS = Path.home() / ".local/share/systemd/user"
 RULE = Path("/etc/udev/rules.d/70-controller-utils.rules")
+KEEP = Path("/etc/atomic-update.conf.d/controller-utils-frame.conf")
+DESKTOP = Path.home() / ".local/share/applications/org.controllerutils.frame.desktop"
+LEGACY = tuple(
+    map(
+        Path,
+        (
+            "/var/lib/controller-utils",
+            "/var/lib/controller-utils-updates",
+            "/etc/systemd/system/controller-utils-maintenance.service",
+            "/etc/systemd/system/multi-user.target.wants/controller-utils-maintenance.service",
+            "/etc/atomic-update.conf.d/controller-utils.conf",
+        ),
+    )
+)
 NUMPY = "2.5.5"
 NUMPY_WHEELS = (
     "a0750f2156d53446caca85663d0b65d67214e1664b9050454a731ea1418d176a",
@@ -32,12 +47,14 @@ NUMPY_WHEELS = (
 )
 
 
-def command(*args, capture=False, check=True):
-    return subprocess.run(args, check=check, text=True, capture_output=capture, timeout=180)
+def command(*args, capture=False, check=True, input=None):
+    return subprocess.run(
+        args, check=check, text=True, capture_output=capture, timeout=180, input=input
+    )
 
 
-def systemctl(*args, check=True):
-    return command("systemctl", "--user", *args, check=check)
+def systemctl(*args, check=True, capture=False):
+    return command("systemctl", "--user", *args, check=check, capture=capture)
 
 
 def verify_package(package):
@@ -81,7 +98,14 @@ def calibration(source):
     if not 0 < len(contents) <= 131072:
         raise ValueError("Invalid calibration size")
     value = json.loads(contents)
-    if value["version"] != 1 or not isinstance(value["rig"]["cameras"], list):
+    cameras = value["rig"]["cameras"]
+    if (
+        value["version"] != 1
+        or not isinstance(value["device"]["device_serial_number"], str)
+        or not value["device"]["device_serial_number"]
+        or not isinstance(cameras, list)
+        or len(cameras) < 4
+    ):
         raise ValueError("Invalid Frame camera calibration")
     for name in ("slam_left", "slam_right", "upper_left", "upper_right"):
         serial = value["metadata"]["cameras"][name]["serialNumber"]
@@ -90,10 +114,25 @@ def calibration(source):
     return json.dumps(value, separators=(",", ":"), allow_nan=False) + "\n"
 
 
+def start_service(unit):
+    result = systemctl("start", unit, check=False)
+    if result.returncode == 0:
+        return
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        state = systemctl("show", unit, "-p", "ActiveState", "--value", capture=True).stdout.strip()
+        if state == "active":
+            return
+        if state != "activating":
+            break
+        time.sleep(0.2)
+    result.check_returncode()
+
+
 def start_services():
-    systemctl("start", "steamvr.service")
+    start_service("steamvr.service")
     systemctl("reset-failed", "steam.service", check=False)
-    systemctl("start", "steam.service")
+    start_service("steam.service")
 
 
 def stop_services(*, check=True):
@@ -172,20 +211,75 @@ def numpy_environment(data):
     return target
 
 
+def legacy_installation():
+    for item in LEGACY:
+        if item.exists() or item.is_symlink():
+            raise ValueError(
+                "Uninstall the previous Valve IR release with its original uninstaller first. "
+                "Keep app-data and a copy of this headset's camera calibration."
+            )
+
+
+def validate_calibration(package, python, camera_config):
+    command(
+        python / "bin/python",
+        "-I",
+        "-c",
+        "import json,sys; sys.path.insert(0,sys.argv[1]); "
+        "from frame_raw_camera import parse_calibration; parse_calibration(json.load(sys.stdin))",
+        package / "app/optical",
+        input=camera_config,
+    )
+
+
+def policy_sources(package):
+    return {path: package / path.name for path in (RULE, KEEP)}
+
+
+def policy_present(path, source):
+    if path.is_symlink() or (path.exists() and path.read_bytes() != source.read_bytes()):
+        raise ValueError(f"Existing policy differs from the package at {path}")
+    return path.exists()
+
+
+def reload_rules():
+    command("sudo", "udevadm", "control", "--reload-rules")
+    command("sudo", "udevadm", "trigger", "--subsystem-match=hidraw")
+
+
+def remove_policies(paths):
+    if paths:
+        command("sudo", "rm", "-f", "--", *paths)
+        if RULE in paths:
+            reload_rules()
+
+
+def service_files():
+    data = BASE / "app-data"
+    camera_env, input_env = data / "camera-hook.env", data / "input-hook.env"
+    return (
+        camera_env,
+        input_env,
+        {
+            UNITS
+            / "steamvr.service.d/90-controller-utils-camera.conf": f"[Service]\nEnvironmentFile=-{camera_env}\n",
+            UNITS
+            / "steam.service.d/90-controller-utils-input.conf": f"[Service]\nEnvironmentFile=-{input_env}\n",
+        },
+    )
+
+
 def install(package, camera_config):
     data, app = BASE / "app-data", BASE / "app"
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (data / "frame-install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         python = numpy_environment(data)
-        if RULE.is_symlink() or (
-            RULE.exists() and RULE.read_bytes() != (package / RULE.name).read_bytes()
-        ):
-            raise ValueError("Existing Controller Utils udev rule differs from the package")
-        if not RULE.exists():
-            command("sudo", "install", "-m", "0644", package / RULE.name, RULE)
-            command("sudo", "udevadm", "control", "--reload-rules")
-            command("sudo", "udevadm", "trigger", "--subsystem-match=hidraw")
+        validate_calibration(package, python, camera_config)
+        sources = policy_sources(package)
+        missing = [path for path, source in sources.items() if not policy_present(path, source)]
+        if missing:
+            command("sudo", "-v")
         driver = BASE / "native-driver"
         if (driver.exists() or driver.is_symlink()) and (
             not driver.is_symlink() or os.readlink(driver) != "app/native-driver"
@@ -199,15 +293,10 @@ def install(package, camera_config):
         (stage / "optical/venv").symlink_to(python, target_is_directory=True)
         launcher = BASE / "controller-utils"
         config = data / "camera-calibration.json"
-        camera_env = data / "camera-hook.env"
-        input_env = data / "input-hook.env"
-        camera_drop = UNITS / "steamvr.service.d/90-controller-utils-camera.conf"
-        input_drop = UNITS / "steam.service.d/90-controller-utils-input.conf"
-        drop_ins = {
-            camera_drop: f"[Service]\nEnvironmentFile=-{camera_env}\n",
-            input_drop: f"[Service]\nEnvironmentFile=-{input_env}\n",
-        }
-        managed = {launcher, config, camera_env, input_env, *drop_ins}
+        camera_env, input_env, drop_ins = service_files()
+        receipt = data / "frame-policies.json"
+        owned = set(json.loads(receipt.read_text())) if receipt.is_file() else set()
+        managed = {launcher, config, camera_env, input_env, DESKTOP, receipt, *drop_ins}
         old = {}
         for item in managed:
             if item.is_symlink() or (item.exists() and not item.is_file()):
@@ -219,6 +308,7 @@ def install(package, camera_config):
         updater = "controller-utils-update.service"
         legacy_enabled = systemctl("is-enabled", "--quiet", updater, check=False).returncode == 0
         moved = installed = driver_created = False
+        created_policies = []
         try:
             if legacy_enabled:
                 systemctl("disable", updater)
@@ -249,6 +339,17 @@ def install(package, camera_config):
             systemctl("daemon-reload")
             start_services()
             ready()
+            for path in missing:
+                command("sudo", "install", "-m", "0644", sources[path], path)
+                created_policies.append(path)
+            if RULE in created_policies:
+                reload_rules()
+            if created_policies:
+                atomic_text(
+                    receipt,
+                    json.dumps(sorted(owned | {path.name for path in created_policies})),
+                    0o600,
+                )
             if not moved:
                 command(app / "controller-utils", "--register")
         except BaseException:
@@ -268,15 +369,87 @@ def install(package, camera_config):
             if legacy_enabled:
                 systemctl("enable", updater, check=False)
             systemctl("daemon-reload")
-            start_services()
+            try:
+                remove_policies(created_policies)
+            finally:
+                start_services()
             raise
     print(f"Controller Utils installed. Previous files are in {backup}.")
+
+
+def uninstall(package):
+    data, app = BASE / "app-data", BASE / "app"
+    driver, launcher = BASE / "native-driver", BASE / "controller-utils"
+    camera_env, input_env, drop_ins = service_files()
+    with (data / "frame-install.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if (
+            not app.is_dir()
+            or app.is_symlink()
+            or not driver.is_symlink()
+            or os.readlink(driver) != "app/native-driver"
+            or launcher.is_symlink()
+            or launcher.read_bytes() != (package / launcher.name).read_bytes()
+        ):
+            raise ValueError("Use the package matching the installed Controller Utils build")
+        receipt = data / "frame-policies.json"
+        owned = set(json.loads(receipt.read_text())) if receipt.is_file() else set()
+        sources = policy_sources(package)
+        paths = [
+            path
+            for path, source in sources.items()
+            if path.name in owned and policy_present(path, source)
+        ]
+        for drop, contents in drop_ins.items():
+            if drop.is_symlink() or (drop.exists() and drop.read_text() != contents):
+                raise ValueError(f"Existing Steam service configuration differs at {drop}")
+        if paths:
+            command("sudo", "-v")
+        backup = Path(tempfile.mkdtemp(prefix="removed-frame-", dir=BASE))
+        files = (app, launcher, camera_env, input_env, receipt, *drop_ins)
+        driver_removed = False
+        command(app / "controller-utils", "--unregister")
+        try:
+            stop_services()
+            remove_policies(paths)
+            command(VR / "vrpathreg", "removedriver", driver)
+            driver_removed = True
+            driver.unlink()
+            for path in files:
+                if path.exists():
+                    path.rename(backup / path.name)
+            systemctl("daemon-reload")
+            start_services()
+        except BaseException:
+            stop_services(check=False)
+            for path in files:
+                saved = backup / path.name
+                if saved.exists():
+                    saved.rename(path)
+            try:
+                if driver_removed:
+                    if not driver.is_symlink():
+                        driver.symlink_to("app/native-driver", target_is_directory=True)
+                    command(VR / "vrpathreg", "adddriver", driver)
+                for path in paths:
+                    if not policy_present(path, sources[path]):
+                        command("sudo", "install", "-m", "0644", sources[path], path)
+                if RULE in paths:
+                    reload_rules()
+            finally:
+                systemctl("daemon-reload")
+                start_services()
+            command(app / "controller-utils", "--register")
+            raise
+    print(f"Controller Utils was removed. Settings and calibration remain in {data}.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--calibration", type=Path)
-    parser.add_argument("--check", action="store_true", help="Check the Frame without installing")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--check", action="store_true", help="Check the Frame without installing")
+    action.add_argument("--uninstall", action="store_true", help="Remove Controller Utils")
     args = parser.parse_args()
     if os.geteuid() == 0:
         raise ValueError("Run this installer as the Steam Frame user")
@@ -284,8 +457,16 @@ def main():
     channel, build_id = verify_package(package)
     branch = command("atomupd-manager", "tracked-branch", capture=True).stdout.strip()
     variant = command("atomupd-manager", "tracked-variant", capture=True).stdout.strip()
-    if platform.machine() != "aarch64" or variant != "vr" or branch != channel:
+    if (
+        platform.machine() != "aarch64"
+        or variant != "vr"
+        or (branch != channel and not args.uninstall)
+    ):
         raise ValueError(f"This package requires Steam Frame's {channel} channel")
+    if args.uninstall:
+        uninstall(package)
+        return
+    legacy_installation()
     installed = {
         key: value.strip('"')
         for key, _, value in (
@@ -311,6 +492,7 @@ def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
         main()
     except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as error:

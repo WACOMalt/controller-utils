@@ -67,14 +67,14 @@ void OpticalSession::send_command(const char *op) {
     camera->send(msg.get());
 }
 void OpticalSession::acquire() {
-    resume.reset();
+    discard_resume();
     restart_anchor = false;
     send_command("reacquire");
     guide.begin(raw_time());
 }
 void OpticalSession::recenter() {
     const auto head = runtime.head_pose(2);
-    if (!alignment || !imu.orientation || !head) {
+    if (resume || !alignment || !imu.orientation || !head) {
         acquire();
         return;
     }
@@ -244,8 +244,8 @@ void OpticalSession::observation(json_object *event, double now) {
             imu.orientation_time = t;
             measured = world;
         }
+        discard_resume();
         alignment = multiply(world, conjugate(*measured));
-        resume.reset();
         restart_anchor = bool(guide.started);
         if (!restart_anchor)
             guide.finish(now);
@@ -267,8 +267,9 @@ void OpticalSession::observation(json_object *event, double now) {
     if (!finite(point) || norm(point) > 1.6)
         return;
     const auto led = transform_point(*head, point);
-    if (resume && op == "led")
-        check_resume(t, led, *measured);
+    const bool confirming_resume = resume && op == "led";
+    if (confirming_resume && !check_resume(t, led, *measured))
+        return;
     if (!alignment)
         return;
     const auto emitter = rotate(multiply(*alignment, *measured), cal.emitter);
@@ -283,25 +284,44 @@ void OpticalSession::observation(json_object *event, double now) {
         position.sample(std::max(t, imu.orientation_time.value_or(t)), {}, 0);
     if (position.observe(t, world, now)) {
         fix = t;
+        if (confirming_resume) {
+            send_command("resume");
+            resume.reset();
+        }
         if (restart_anchor) {
             restart_anchor = false;
             guide.finish(now);
         }
     }
 }
-void OpticalSession::check_resume(double time, const Vector3 &led, const Quaternion &orientation) {
-    if (distance(led, resume->led) > .15) {
-        resume.reset();
-        return;
+bool OpticalSession::check_resume(double time, const Vector3 &led, const Quaternion &orientation) {
+    if (!position.observations.empty() && time <= position.observations.back().time)
+        return false;
+    auto expected = resume->led;
+    const auto predicted = position.at(time);
+    const bool moving = resume_motion_since && time >= resume_motion_since - .02;
+    if (moving && predicted && alignment)
+        expected = add(predicted->position, rotate(multiply(*alignment, orientation), cal.emitter));
+    if (distance(led, expected) > (moving ? .22 : .15)) {
+        discard_resume();
+        return false;
     }
-    if (!resume_still_since)
-        return;
+    if (!alignment && !resume_still_since)
+        return false;
     if (resume_seen && time > resume_seen && time - resume_seen <= .15) {
-        send_command("resume");
-        alignment = multiply(resume->pose.orientation, conjugate(orientation));
-        resume.reset();
-    } else
-        resume_seen = time;
+        if (!alignment)
+            alignment = multiply(resume->pose.orientation, conjugate(orientation));
+        return true;
+    }
+    resume_seen = time;
+    return false;
+}
+void OpticalSession::discard_resume() {
+    if (!resume)
+        return;
+    resume.reset();
+    alignment.reset();
+    position = InertialPosition(position.smoothing);
 }
 void OpticalSession::observe_motion(const ControllerReport &report) {
     const auto acceleration = imu.body_vector(report.acceleration);
@@ -312,9 +332,13 @@ void OpticalSession::observe_motion(const ControllerReport &report) {
         last_up = scale(acceleration, 1 / gravity);
     if (!resume)
         return;
-    if (angular > .65 || (resume_still_since && std::abs(gravity - 9.80665) > 1.8) ||
-        (quiet && dot(*last_up, resume->up) < .94)) {
-        resume.reset();
+    const bool tilted = quiet && dot(*last_up, resume->up) < .94;
+    if (alignment) {
+        if (!resume_motion_since && (tilted || angular > .3 || std::abs(gravity - 9.80665) > .8))
+            resume_motion_since = last_imu;
+    } else if (angular > .65 || tilted ||
+               (resume_still_since && std::abs(gravity - 9.80665) > 1.8)) {
+        discard_resume();
     } else if (!quiet) {
         resume_still_since = 0;
         resume_seen = 0;
@@ -323,12 +347,12 @@ void OpticalSession::observe_motion(const ControllerReport &report) {
     }
 }
 bool OpticalSession::showing_resume(double now) const {
-    return resume && resume_still_since && last_imu - resume_still_since >= .12 &&
-           now - last_imu < .15;
+    return resume && now - last_imu < .15 &&
+           (alignment || (resume_still_since && last_imu - resume_still_since >= .12));
 }
 std::optional<TrackingResume> OpticalSession::checkpoint() const {
     if (resume)
-        return resume;
+        return resume_motion_since ? std::nullopt : resume;
     if (!acquired() || !imu.orientation || !imu.orientation_time)
         return {};
     const auto now = raw_time();
@@ -350,6 +374,8 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
     if (!head)
         throw std::runtime_error("Headset asleep. Tracking will resume when worn.");
     heads.add(now, head);
+    if (resume && resume_motion_since && now - resume_motion_since > .85)
+        discard_resume();
     for (const auto &r : reports) {
         if (!source_ready)
             break;
@@ -383,19 +409,34 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
         if (!imu.orientation_time || old == imu.orientation_time)
             continue;
         const double t = *imu.orientation_time;
+        if (!alignment && showing_resume(now) && now - t >= -.02 && now - t <= .15) {
+            alignment = multiply(resume->pose.orientation, conjugate(*imu.orientation));
+            position.sample(t, {}, 0);
+            position.observe(t, resume->pose.position, now);
+            continue;
+        }
         if (alignment && imu.orientation && (!position.time || t > *position.time)) {
-            const auto acc = rotate(*imu.orientation, imu.body_vector(r.report.acceleration));
-            // Remove gravity before applying the palm alignment's estimated tilt.
-            position.sample(t, rotate(*alignment, subtract(acc, {0, 9.80665, 0})),
-                            norm(r.report.angular_velocity));
+            if (resume && !resume_motion_since)
+                position.sample(t, {}, 0);
+            else {
+                const auto acc = rotate(*imu.orientation, imu.body_vector(r.report.acceleration));
+                // Remove gravity before applying the palm alignment's estimated tilt.
+                position.sample(t, rotate(*alignment, subtract(acc, {0, 9.80665, 0})),
+                                norm(r.report.angular_velocity));
+            }
         }
     }
     if (source_ready && now - notified >= .015) {
         json::Value msg(json_object_new_object());
         json_object_object_add(msg.get(), "op", json_object_new_string("sample"));
         json_object_object_add(msg.get(), "time", json_object_new_double(now));
-        if (resume && resume_still_since) {
-            const auto prior = transform_point(inverse_pose(*head), resume->led);
+        if (resume && (resume_still_since || resume_motion_since)) {
+            auto led = resume->led;
+            if (resume_motion_since && alignment && imu.orientation)
+                if (const auto estimated = position.value(now))
+                    led = add(*estimated,
+                              rotate(multiply(*alignment, *imu.orientation), cal.emitter));
+            const auto prior = transform_point(inverse_pose(*head), led);
             json_object_object_add(msg.get(), "prior", json::value(prior));
         } else if (alignment && imu.orientation && imu.orientation_time &&
                    now - *imu.orientation_time < .06 && fix && now - fix < .8) {
@@ -538,6 +579,11 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
         result = resume->pose;
         result->position_time = now;
         result->orientation_time = last_imu;
+        if (resume_motion_since && alignment && imu.orientation)
+            if (const auto estimated = position.value(now)) {
+                result->position = *estimated;
+                result->orientation = multiply(*alignment, *imu.orientation);
+            }
     }
     if (!source_ready)
         status = "Waiting for a live tracking-camera provider.";

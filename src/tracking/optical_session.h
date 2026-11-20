@@ -23,7 +23,7 @@ class OpticalSession final : public TrackingSessionView {
     std::optional<Quaternion> alignment;
     std::optional<Vector3> last_up;
     std::optional<TrackingResume> resume;
-    double resume_seen = 0, resume_still_since = 0;
+    double resume_seen = 0, resume_still_since = 0, resume_motion_since = 0;
     struct InputState : TrackingInputState {
         std::optional<InputControls> input;
         std::optional<double> received, raw_received, filter_confirmed;
@@ -47,7 +47,8 @@ class OpticalSession final : public TrackingSessionView {
     bool confirm_input_gate(int index, double now);
     void update_beam(double now);
     void send_command(const char *op);
-    void check_resume(double time, const Vector3 &led, const Quaternion &orientation);
+    bool check_resume(double time, const Vector3 &led, const Quaternion &orientation);
+    void discard_resume();
     void observe_motion(const ControllerReport &report);
     bool showing_resume(double now) const;
     void observation(json_object *event, double now);

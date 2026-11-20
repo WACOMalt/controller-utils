@@ -304,7 +304,7 @@ int main() {
 
     runtime.head = ct::rigid_pose({std::cos(.35), 0, -std::sin(.35), 0}, {2.5, 1.6, 0});
     const auto wake = [&](const ct::Vector3 &movement, const ct::Vector3 &gravity, bool same_device,
-                          bool picked_up = false) {
+                          bool picked_up = false, bool timeout = false) {
         auto anchor = *checkpoint;
         if (!same_device)
             anchor.controller_serial = "ANOTHER";
@@ -337,20 +337,33 @@ int main() {
         }
         if (picked_up) {
             report.report.angular_velocity[1] = 1;
-            assert(!tick() && !waking.checkpoint());
+            report.report.acceleration[1] += 2.6;
+            for (int i = 0; i < 24; ++i) {
+                preview = tick();
+                assert(preview && !waking.acquired() && !(packet.input.flags & 2));
+            }
+            assert(!waking.checkpoint());
+            assert(std::abs(ct::dot(preview->orientation, anchor.pose.orientation)) < .999);
+            assert(ct::distance(preview->position, anchor.pose.position) > .006);
             report.report.angular_velocity = {};
+            report.report.acceleration = gravity;
+            if (timeout) {
+                for (int i = 0; i < 180; ++i)
+                    preview = tick();
+                assert(!preview && !waking.checkpoint());
+            }
         }
         const auto point =
             ct::transform_point(ct::inverse_pose(runtime.head), ct::add(anchor.led, movement));
         camera->emit("led", ct::raw_time() - .01, point);
-        const bool expect_resume = expect_preview && !picked_up && ct::norm(movement) < .15;
+        const bool expect_resume = expect_preview && !timeout && ct::norm(movement) < .15;
         assert(bool(tick()) == expect_resume && !camera->resumed && !waking.acquired());
         camera->emit("led", ct::raw_time() - .01, point);
         const auto restored = tick();
         assert(camera->resumed == expect_resume && bool(restored) == expect_resume);
         if (restored) {
             assert(ct::distance(restored->position, reanchored->position) < .03);
-            assert(std::abs(ct::dot(restored->orientation, anchor.pose.orientation)) > .9999);
+            assert(std::abs(ct::dot(restored->orientation, preview->orientation)) > .9999);
         } else {
             assert(!waking.checkpoint());
             camera->emit("seed", ct::raw_time() - .01);
@@ -362,6 +375,8 @@ int main() {
     wake({}, {9.80665, 0, 0}, true);
     wake({}, {0, 9.80665, 0}, false);
     wake({}, {0, 9.80665, 0}, true, true);
+    wake({.4, 0, 0}, {0, 9.80665, 0}, true, true);
+    wake({}, {0, 9.80665, 0}, true, true, true);
     close(pair_fd[0]);
     close(pair_fd[1]);
     close(gate_fd[0]);

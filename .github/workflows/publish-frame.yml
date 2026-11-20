@@ -72,6 +72,8 @@ jobs:
             gh release download v0.2.0 --pattern 'latest.json' --pattern 'latest.sig' \
               --pattern 'controller-utils-0.2.0-14-linuxarm64.tar.gz' --dir build/legacy-release
             python3 tools/build_legacy_bridge.py --reference build/legacy-release --output dist --key "$key"
+          else
+            gh release download v0.3.0 --pattern 'latest.json' --pattern 'latest-stable.json' --dir dist
           fi
       - name: Publish signed release
         env:
@@ -84,8 +86,4 @@ jobs:
             gh release create "$RELEASE_TAG" --verify-tag --draft --latest=false --generate-notes
           fi
           gh release upload "$RELEASE_TAG" dist/* --clobber
-          if test "$RELEASE_TAG" = v0.3.0; then
-            gh release edit "$RELEASE_TAG" --draft=false --latest
-          else
-            gh release edit "$RELEASE_TAG" --draft=false --latest=false
-          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest

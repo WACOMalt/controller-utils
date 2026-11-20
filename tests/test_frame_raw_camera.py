@@ -101,7 +101,10 @@ class RawCameraTest(unittest.TestCase):
             self.raw.frame(self.receiver, self.cameras, 0, consume)
 
     def test_illumination_handoff_does_not_update_dark_baseline(self):
-        import frame_camera_worker as worker
+        with patch.object(
+            sys, "path", [str(Path(__file__).resolve().parents[1] / "tools"), *sys.path]
+        ):
+            import frame_camera_worker as worker
 
         with patch.object(worker, "PalmBootstrap", return_value=SimpleNamespace(head=None)):
             tracker = worker.CameraTracking(

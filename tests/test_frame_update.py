@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import runpy
 import subprocess
 import tarfile
@@ -145,6 +146,8 @@ class FrameUpdateTest(unittest.TestCase):
 
         def setup(data, package, uninstall):
             self.assertEqual(data, base / "app-data")
+            self.assertEqual(os.environ["XDG_RUNTIME_DIR"], f"/run/user/{os.getuid()}")
+            self.assertNotIn("DBUS_SESSION_BUS_ADDRESS", os.environ)
             command = ["/usr/bin/env", "python3", package / "install.py"]
             if uninstall:
                 command.append("--uninstall")
@@ -157,6 +160,11 @@ class FrameUpdateTest(unittest.TestCase):
                 patch.object(Path, "home", return_value=self.work),
                 patch("os.geteuid", return_value=1000),
                 patch("platform.machine", return_value="aarch64"),
+                patch.dict(
+                    os.environ,
+                    XDG_RUNTIME_DIR="/run/user/1000/nested_plasma",
+                    DBUS_SESSION_BUS_ADDRESS="unix:path=/tmp/desktop-bus",
+                ),
                 patch.dict(
                     UPDATER["bootstrap"].__globals__,
                     PUBLIC_KEY=key,

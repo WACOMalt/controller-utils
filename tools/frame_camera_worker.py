@@ -78,12 +78,19 @@ class CameraTracking:
                 self.first_ir = t
             illuminated = self.enabled_at is not None and t >= self.enabled_at
             prior = None
-            if self.seeded and self.fix and 0 <= t - self.fix[0] < 0.8 and self.priors:
+            if self.priors and (
+                self.check_resume or (self.seeded and self.fix and 0 <= t - self.fix[0] < 0.8)
+            ):
                 stamp, point = min(self.priors, key=lambda entry: abs(t - entry[0]))
                 if abs(t - stamp) < 0.045:
                     prior = point
             fix = self.led.update(
-                t, {k: centroids(im) for k, im in images.items()}, illuminated, prior, images
+                t,
+                {k: centroids(im) for k, im in images.items()},
+                illuminated,
+                prior,
+                images,
+                resume=self.check_resume and prior is not None,
             )
             if (
                 not self.lit_requested

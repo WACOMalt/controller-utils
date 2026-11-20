@@ -137,10 +137,13 @@ class RawCameraTest(unittest.TestCase):
         tracker.lit_requested = tracker.check_resume = True
         tracker.enabled_at = 1.0
         fix = (np.array([0, 0, -0.5]), ("left", "right"))
-        with patch.object(tracker.led, "update", return_value=fix):
+        tracker.priors.append((1.1, fix[0]))
+        with patch.object(tracker.led, "update", return_value=fix) as update:
             self.assertEqual(
                 [event["op"] for event in tracker.exposure(38, 1.1, {}, bool)], ["led"]
             )
+            np.testing.assert_array_equal(update.call_args.args[3], fix[0])
+            self.assertTrue(update.call_args.kwargs["resume"])
             tracker.pending = Future()
             tracker.pending.set_result(SimpleNamespace(time=1.1))
             tracker.accept_alignment()

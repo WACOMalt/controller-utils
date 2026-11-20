@@ -283,7 +283,6 @@ void OpticalSession::observation(json_object *event, double now) {
         position.sample(std::max(t, imu.orientation_time.value_or(t)), {}, 0);
     if (position.observe(t, world, now)) {
         fix = t;
-        last_led = led;
         if (restart_anchor) {
             restart_anchor = false;
             guide.finish(now);
@@ -338,9 +337,10 @@ std::optional<TrackingResume> OpticalSession::checkpoint() const {
         return {};
     const auto orientation = multiply(*alignment, *imu.orientation);
     const auto up = last_up.value_or(rotate(conjugate(orientation), {0, 1, 0}));
+    const auto led = add(*estimated, rotate(orientation, cal.emitter));
     return TrackingResume{cal.headset_serial,
                           serial,
-                          last_led,
+                          led,
                           up,
                           {fix, now, *estimated, *imu.orientation_time, orientation}};
 }
@@ -394,8 +394,11 @@ std::optional<BodyPoseMessage> OpticalSession::step(const std::vector<Controller
         json::Value msg(json_object_new_object());
         json_object_object_add(msg.get(), "op", json_object_new_string("sample"));
         json_object_object_add(msg.get(), "time", json_object_new_double(now));
-        if (alignment && imu.orientation && imu.orientation_time &&
-            now - *imu.orientation_time < .06 && fix && now - fix < .8) {
+        if (resume && resume_still_since) {
+            const auto prior = transform_point(inverse_pose(*head), resume->led);
+            json_object_object_add(msg.get(), "prior", json::value(prior));
+        } else if (alignment && imu.orientation && imu.orientation_time &&
+                   now - *imu.orientation_time < .06 && fix && now - fix < .8) {
             if (const auto p = position.value(now)) {
                 const auto emitter = rotate(multiply(*alignment, *imu.orientation), cal.emitter);
                 const auto prior = transform_point(inverse_pose(*head), add(*p, emitter));

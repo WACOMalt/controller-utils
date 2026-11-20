@@ -1,5 +1,6 @@
 """Four-camera IR association in the factory calibration frame (metres)."""
 
+from collections import deque
 from itertools import combinations
 
 import numpy as np
@@ -109,13 +110,14 @@ class LedTracker:
             raise ValueError("Expected four calibrated tracking cameras")
         self.cameras = cameras
         self.dark = {k: [] for k in cameras}
+        self.resume_dark = {k: deque(maxlen=128) for k in cameras}
         self.baselines = dict.fromkeys(cameras, 0)
         self.last = None
         self.streak = 0
         self.time = -np.inf
         self.bearing = None
 
-    def update(self, t, detections, illuminated, prior=None, images=None):
+    def update(self, t, detections, illuminated, prior=None, images=None, *, resume=False):
         """One synchronized exposure group, with absent cameras omitted."""
         if not np.isfinite(t) or t <= self.time or not detections.keys() <= self.cameras.keys():
             raise ValueError("Invalid IR exposure time or camera")
@@ -128,18 +130,14 @@ class LedTracker:
             pixels = np.asarray(points, dtype=float).reshape(-1, 2)
             if len(pixels) > 128 or not np.isfinite(pixels).all():
                 raise ValueError("Invalid IR centroids")
-            if not illuminated:
-                self.baselines[key] += 1
-                for p in pixels:
-                    if not any(np.linalg.norm(p - q) < 8 for q in self.dark[key]):
-                        if len(self.dark[key]) >= 512:
-                            raise ValueError("Too much movement during LED blink")
-                        self.dark[key].append(p)
-                continue
-            if self.baselines[key] < 5:
+            if illuminated and self.baselines[key] < 5:
                 continue
             expected = None
-            if prior is not None and (prior - camera.origin) @ camera.axes[2] > 0:
+            if (
+                prior is not None
+                and (illuminated or resume)
+                and (prior - camera.origin) @ camera.axes[2] > 0
+            ):
                 expected = camera.project(prior)
                 if (
                     images is not None
@@ -148,23 +146,41 @@ class LedTracker:
                     and (weak := dim_centroid(images[key], expected)) is not None
                 ):
                     pixels = np.vstack([pixels, weak])
+            if not illuminated:
+                self.baselines[key] += 1
+                if resume and expected is not None:
+                    offsets = pixels - expected
+                    self.resume_dark[key].extend(offsets[np.linalg.norm(offsets, axis=1) < 12])
+                for p in pixels:
+                    if not any(np.linalg.norm(p - q) < 8 for q in self.dark[key]):
+                        if len(self.dark[key]) >= 512:
+                            raise ValueError("Too much movement during LED blink")
+                        self.dark[key].append(p)
+                continue
             if not len(pixels):
                 continue
             # The clustered LEDs on the stock VR controllers are a frequent distractor.
             near = np.linalg.norm(pixels[:, None] - pixels, axis=2) < 65
-            isolated = near.sum(axis=1) <= 2
+            new = np.ones(len(pixels), dtype=bool)
             if self.dark[key]:
-                isolated &= (
-                    np.linalg.norm(pixels[:, None] - self.dark[key], axis=2).min(axis=1) > 12
+                new &= np.linalg.norm(pixels[:, None] - self.dark[key], axis=2).min(axis=1) > 12
+            if resume and expected is not None and self.resume_dark[key]:
+                new &= (
+                    np.linalg.norm(
+                        (pixels - expected)[:, None] - self.resume_dark[key], axis=2
+                    ).min(axis=1)
+                    > 4
                 )
+            isolated = (near.sum(axis=1) <= 2) & new
             if expected is not None:
                 near_prior = np.linalg.norm(pixels - expected, axis=1) < 12
                 guided = directions(camera, pixels[isolated & near_prior])
                 bearings.extend((camera.origin, r) for r in guided if np.isfinite(r).all())
                 # Allow a stereo consensus to recover the LED in a cluttered camera.
-                isolated |= near_prior
+                isolated |= (near_prior & new) if resume else near_prior
             if predicted:
-                isolated |= np.linalg.norm(pixels - camera.project(self.last[1]), axis=1) < 10
+                near_last = np.linalg.norm(pixels - camera.project(self.last[1]), axis=1) < 10
+                isolated |= (near_last & new) if resume else near_last
             if not 0 < isolated.sum() <= 8:
                 continue
             r = directions(camera, pixels[isolated])

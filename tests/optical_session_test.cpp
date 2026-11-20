@@ -330,6 +330,7 @@ int main() {
             preview = tick();
         const bool expect_preview = same_device && gravity[0] == 0;
         assert(bool(preview) == expect_preview && !waking.acquired() && !(packet.input.flags & 2));
+        assert(camera->guided == expect_preview);
         if (preview) {
             assert(preview->time == anchor.pose.time && preview->position == anchor.pose.position);
             assert(!ct::json::boolean(ct::json::field(waking.presentation().get(), "active")));

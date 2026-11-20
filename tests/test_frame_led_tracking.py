@@ -116,3 +116,34 @@ class FrameLedTrackingTest(unittest.TestCase):
         self.assertEqual(set(support), set(keys))
         self.assertIsNone(tracker.bearing)
         self.assertIsNone(tracker.update(2.15, dict.fromkeys(keys, []), True))
+
+    def test_resume_finds_a_dim_led_and_rejects_existing_dim_background(self):
+        keys = ("slam_right", "upper_left")
+        detections = dict.fromkeys(keys, [])
+
+        def images(point, brightness):
+            result = {k: np.full(self.cams[k].shape, 25, dtype=np.uint8) for k in keys}
+            for key, image in result.items():
+                x, y = np.rint(self.cams[key].project(point)).astype(int)
+                image[y, x] = brightness
+            return result
+
+        before = self.p - [0.08, 0, 0]
+        illuminated = images(self.p, 83)
+        for background in (25, 83):
+            with self.subTest(background=background):
+                tracker = self.make()
+                dark = images(before, background)
+                for i in range(5):
+                    tracker.update(i * 0.03, detections, False, before, dark, resume=True)
+                fix = None
+                for i in range(4):
+                    fix = tracker.update(
+                        1 + i * 0.03, detections, True, self.p, illuminated, resume=True
+                    )
+                if background == 25:
+                    position, support = fix
+                    np.testing.assert_allclose(position, self.p, atol=0.008)
+                    self.assertEqual(set(support), set(keys))
+                else:
+                    self.assertIsNone(fix)

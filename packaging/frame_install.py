@@ -99,7 +99,12 @@ def start_services():
 def stop_services(*, check=True):
     # Steam wants SteamVR and can queue a competing start during shutdown.
     systemctl(
-        "--job-mode=replace-irreversibly", "stop", "steam.service", "steamvr.service", check=check
+        "--job-mode=replace-irreversibly",
+        "stop",
+        "steam.service",
+        "steamvr.service",
+        "gamescope-session.service",
+        check=check,
     )
 
 

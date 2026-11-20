@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-UPDATER = runpy.run_path(str(ROOT / "packaging/frame_update.py"))
+UPDATER = runpy.run_path(str(ROOT / "packaging/bootstrap.py"))
 
 
 class FrameUpdateTest(unittest.TestCase):
@@ -44,7 +44,7 @@ class FrameUpdateTest(unittest.TestCase):
         (package / "app/release.json").write_text(json.dumps(self.release))
         (package / "install.py").write_text(
             "import sys\nfrom pathlib import Path\n"
-            f"assert sys.argv[1:] == [{mode!r}]\n"
+            f"assert sys.argv[1:] == {[mode] if mode else []!r}\n"
             f"Path({str(self.marker)!r}).touch()\n"
         )
         archive = self.feed / filename
@@ -117,6 +117,57 @@ class FrameUpdateTest(unittest.TestCase):
         UPDATER["apply"](self.root, self.data, "beta", self.current)
         self.assertTrue(self.marker.exists())
         self.assertEqual((self.data / "calibration").read_text(), "preserve this")
+
+    def test_bootstrap_uses_signed_packages_for_install_and_removal(self):
+        self.assertEqual(UPDATER["PUBLIC_KEY"], (ROOT / "assets/update-public.pem").read_text())
+        self.sign("stable", mode=None)
+        self.sign("beta", mode="--uninstall")
+        base = self.work / ".local/share/controller-utils"
+        (base / "app").mkdir(parents=True)
+        (base / "app/release.json").write_text(json.dumps(self.release))
+
+        def download(url, path, maximum):
+            if url == UPDATER["API"]:
+                path.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "tag_name": "v0.3.0",
+                                "draft": False,
+                                "assets": [{"name": name} for name in UPDATER["paths"]("stable")],
+                            }
+                        ]
+                    )
+                )
+            else:
+                self.assertIn("/download/v0.3.0/", url)
+                path.write_bytes((self.feed / path.name).read_bytes())
+
+        def setup(data, package, uninstall):
+            self.assertEqual(data, base / "app-data")
+            command = ["/usr/bin/env", "python3", package / "install.py"]
+            if uninstall:
+                command.append("--uninstall")
+            return subprocess.run(command, check=True).returncode
+
+        key = (self.root / "assets/update-public.pem").read_text()
+        for channel, arguments in (("stable", []), ("beta", ["--uninstall"])):
+            with (
+                self.subTest(channel=channel),
+                patch.object(Path, "home", return_value=self.work),
+                patch("os.geteuid", return_value=1000),
+                patch("platform.machine", return_value="aarch64"),
+                patch.dict(
+                    UPDATER["bootstrap"].__globals__,
+                    PUBLIC_KEY=key,
+                    download=download,
+                    frame_setting={"tracked-variant": "vr", "tracked-branch": channel}.__getitem__,
+                    terminal_setup=setup,
+                ),
+            ):
+                self.assertEqual(UPDATER["bootstrap"](arguments), 0)
+                self.assertTrue(self.marker.is_file())
+                self.marker.unlink()
 
     def test_signature_and_archive_are_checked_before_install(self):
         archive = self.sign("stable")

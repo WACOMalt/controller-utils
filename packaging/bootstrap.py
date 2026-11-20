@@ -1,10 +1,13 @@
-"""Download and install signed Controller Utils packages for the active Frame channel."""
+"""Download and install Controller Utils for Steam Frame."""
 
+import argparse
 import fcntl
 import hashlib
 import json
 import os
+import platform
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -16,6 +19,10 @@ RELEASES = f"https://github.com/{REPO}/releases"
 API = f"https://api.github.com/repos/{REPO}/releases?per_page=30"
 LIMIT = 128 * 1024 * 1024
 VERSION = r"[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}"
+PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAgOeA07dV3lAIKraJnLObYbJJTd7F/n6YTLvCmnq4Xfo=
+-----END PUBLIC KEY-----
+"""
 
 
 def download(url, path, maximum):
@@ -195,17 +202,21 @@ def check(root, data, channel, current):
     save_status(data, channel, "ready", f"Version {value['version']} is ready to install.")
 
 
-def install_bundle(data, channel, value, path, mode):
+def unpack_package(directory, value, path):
     verify_archive(path, value)
+    extract(path, directory)
+    package = directory / path.name.removesuffix("-linuxarm64.tar.gz")
+    if json.loads((package / "app/release.json").read_bytes()) != {
+        field: value[field] for field in ("version", "sequence", "platform")
+    }:
+        raise ValueError("Update package does not match the signed release")
+    return package
+
+
+def install_bundle(data, channel, value, path, mode):
     save_status(data, channel, "busy", "Installing update…")
     with tempfile.TemporaryDirectory(prefix="frame-update-", dir=data) as temp:
-        directory = Path(temp)
-        extract(path, directory)
-        package = directory / path.name.removesuffix("-linuxarm64.tar.gz")
-        if json.loads((package / "app/release.json").read_bytes()) != {
-            field: value[field] for field in ("version", "sequence", "platform")
-        }:
-            raise ValueError("Update package does not match the signed release")
+        package = unpack_package(Path(temp), value, path)
         subprocess.run(
             [sys.executable, "-B", package / "install.py", mode],
             check=True,
@@ -240,17 +251,163 @@ def migrate(root, data, channel, current):
         install_bundle(data, channel, value, fetch_bundle(work, value), "--legacy-migration")
 
 
+def frame_setting(name):
+    return subprocess.check_output(
+        ["/usr/bin/atomupd-manager", name], text=True, timeout=10
+    ).strip()
+
+
+def frame_channel():
+    channel = frame_setting("tracked-branch")
+    if channel not in ("stable", "beta"):
+        raise ValueError("Controller Utils requires SteamOS stable or beta")
+    return channel
+
+
+def terminal_setup(data, package, uninstall):
+    terminal_path = next(
+        (
+            os.ttyname(stream.fileno())
+            for stream in (sys.stdin, sys.stdout, sys.stderr)
+            if stream.isatty()
+        ),
+        None,
+    )
+    if terminal_path is None:
+        raise ValueError("Open a terminal on Frame or connect using ssh -t before running setup")
+    with open(terminal_path, "r+b", buffering=0) as terminal:
+        terminal.write(b"Steam and SteamVR will restart. Continue? [y/N] ")
+        if terminal.readline().strip().lower() not in (b"y", b"yes"):
+            return 0
+        data.mkdir(parents=True, exist_ok=True, mode=0o700)
+        job = Path(tempfile.mkdtemp(prefix="setup-", dir=data))
+        staged = job / "package"
+        log = job / "output.log"
+        tmux = ["/usr/bin/tmux", "-S", job / "socket"]
+        env = {name: value for name, value in os.environ.items() if name != "TMUX"}
+        try:
+            shutil.move(package, staged)
+            print(f"Setup log: {log}", flush=True)
+            subprocess.run(
+                [
+                    "/usr/bin/systemd-run",
+                    "--user",
+                    "--scope",
+                    "--quiet",
+                    "--collect",
+                    "--expand-environment=no",
+                    f"--unit=controller-utils-{job.name}",
+                    *tmux,
+                    "-f",
+                    "/dev/null",
+                    "new-session",
+                    "-d",
+                    "-s",
+                    "setup",
+                    "/bin/bash",
+                    "-c",
+                    'job=$1; shift; "$@" 2>&1 | tee "$job/output.log"\n'
+                    "result=${PIPESTATUS[0]}\n"
+                    'rm -rf -- "$job/package"\n'
+                    'printf "%s\\n" "$result" > "$job/status.next"\n'
+                    'mv -- "$job/status.next" "$job/status"',
+                    "controller-utils-setup",
+                    job,
+                    sys.executable,
+                    "-B",
+                    staged / "install.py",
+                    *(["--uninstall"] if uninstall else []),
+                ],
+                env=env,
+                check=True,
+            )
+        except OSError, subprocess.SubprocessError:
+            shutil.rmtree(job)
+            raise
+        subprocess.run(
+            [*tmux, "attach-session", "-t", "setup"],
+            env=env,
+            stdin=terminal,
+            stdout=terminal,
+            stderr=terminal,
+            check=False,
+        )
+    active = subprocess.run(
+        [*tmux, "has-session", "-t", "setup"], capture_output=True, env=env, check=False
+    )
+    if (job / "status").is_file():
+        result = int((job / "status").read_text())
+        if result == 0:
+            shutil.rmtree(job)
+        else:
+            print(f"Setup failed. See {log}.", file=sys.stderr)
+        return result
+    if active.returncode != 0:
+        raise RuntimeError(f"Setup stopped. See {log}.")
+    print(f"Setup is still running. See {log}.")
+    return 0
+
+
+def bootstrap(arguments):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--uninstall", action="store_true", help="Remove Controller Utils")
+    args = parser.parse_args(arguments)
+    if (
+        os.geteuid() == 0
+        or platform.machine() != "aarch64"
+        or frame_setting("tracked-variant") != "vr"
+    ):
+        raise ValueError("Run setup as the Steam Frame user")
+    channel = frame_channel()
+    base = Path.home() / ".local/share/controller-utils"
+    tag = None
+    if args.uninstall:
+        release = base / "app/release.json"
+        if not release.is_file():
+            raise ValueError("Controller Utils is not installed")
+        current = json.loads(release.read_bytes())
+        version = current["version"]
+        if not re.fullmatch(VERSION, version):
+            raise ValueError("Invalid installed release version")
+        if tuple(map(int, version.split("."))) < (0, 3, 0):
+            return subprocess.run(["/bin/sh", base / "app/uninstall.sh"], check=False).returncode
+        tag = f"v{version}"
+    with tempfile.TemporaryDirectory(prefix="controller-utils-") as temp:
+        work = Path(temp)
+        tag = tag or choose_release(work, channel)
+        if tag is None:
+            raise ValueError(f"No Controller Utils release is available for SteamOS {channel}")
+        print(f"Downloading Controller Utils {tag} for SteamOS {channel}...", flush=True)
+        key = work / "public.pem"
+        key.write_text(PUBLIC_KEY)
+        value = fetch_manifest(work, key, channel, tag)
+        if args.uninstall and any(value[field] != current[field] for field in current):
+            raise ValueError("Use the package matching the installed Controller Utils build")
+        package = unpack_package(work, value, fetch_bundle(work, value))
+        return terminal_setup(base / "app-data", package, args.uninstall)
+
+
 def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in ("check", "apply", "migrate"):
+        try:
+            return bootstrap(sys.argv[1:])
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            KeyError,
+            TypeError,
+            tarfile.TarError,
+            subprocess.SubprocessError,
+        ) as error:
+            print(f"Controller Utils: {error}", file=sys.stderr)
+            return 1
     mode = sys.argv[1]
     root = Path(sys.argv[2]).resolve() if mode == "migrate" else Path(__file__).resolve().parent
     data = root.parent / "app-data"
     channel = ""
     try:
-        channel = subprocess.check_output(
-            ["/usr/bin/atomupd-manager", "tracked-branch"], text=True, timeout=10
-        ).strip()
-        if channel not in ("stable", "beta"):
-            raise ValueError("Updates require SteamOS stable or beta")
+        channel = frame_channel()
         current = json.loads((root / "release.json").read_bytes())
         operation = {"check": check, "apply": apply, "migrate": migrate}[mode]
         with (data / "frame-update.lock").open("a") as lock:

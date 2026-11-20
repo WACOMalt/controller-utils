@@ -169,7 +169,7 @@ build/frame-compatibility: tools/frame_compatibility.cpp $(filter-out tools/fram
 	mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -lcrypto -o $@
 
-build/frame_update_source.h: packaging/frame_update.py
+build/frame_update_source.h: packaging/bootstrap.py
 	@mkdir -p build
 	python3 -c 'import json,pathlib; pathlib.Path("$@").write_text("static constexpr char frame_update_source[] = " + json.dumps(pathlib.Path("$<").read_text(), ensure_ascii=False) + ";\n")'
 

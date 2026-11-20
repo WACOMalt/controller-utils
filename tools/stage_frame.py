@@ -100,7 +100,7 @@ def stage(destination, channel, build_id=None):
     files = {
         "app/controller-utils": "build/controller-utils",
         "app/release.json": "release.json",
-        "app/frame_update.py": "packaging/frame_update.py",
+        "app/frame_update.py": "packaging/bootstrap.py",
         "app/assets/update-public.pem": "assets/update-public.pem",
         "app/LICENSE": "LICENSE",
         "app/third_party/openvr/LICENSE": "third_party/openvr/LICENSE",

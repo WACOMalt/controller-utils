@@ -12,6 +12,7 @@
 #include <fstream>
 #include <json-c/json.h>
 #include <linux/dma-buf.h>
+#include <linux/media.h>
 #include <linux/udmabuf.h>
 #include <linux/videodev2.h>
 #include <memory>
@@ -25,6 +26,7 @@
 #include <sys/sysmacros.h>
 #include <sys/un.h>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 using ct::FileDescriptor;
@@ -66,6 +68,94 @@ struct View {
     v4l2_buffer queue{};
     std::array<v4l2_plane, 2> planes{};
 };
+
+template <typename Item> uint64_t pointer(std::vector<Item> &items) {
+    return reinterpret_cast<uintptr_t>(items.data());
+}
+
+// Frame sensor nodes carry their calibration camera name, such as "slam_left", as the
+// device-tree "id" property.
+std::string sensor_id(uint32_t major_number, uint32_t minor_number) {
+    std::ifstream file("/sys/dev/char/" + std::to_string(major_number) + ":" +
+                       std::to_string(minor_number) + "/device/of_node/id");
+    std::string id;
+    std::getline(file, id, '\0');
+    return id;
+}
+
+// Returns the device-tree ids of the sensors that feed a video node through enabled media
+// links. XRService does not route each sensor through the same CSID and VFE on every Frame, so
+// the video node name alone does not identify a camera.
+std::vector<std::string> video_sources(dev_t video) {
+    std::vector<std::string> sources;
+    for (int index = 0; index < 16 && sources.empty(); ++index) {
+        FileDescriptor media(
+            open(("/dev/media" + std::to_string(index)).c_str(), O_RDONLY | O_CLOEXEC));
+        media_v2_topology topology{};
+        if (!media || ioctl_next()(media.get(), MEDIA_IOC_G_TOPOLOGY, &topology) < 0)
+            continue;
+        std::vector<media_v2_entity> entities(topology.num_entities);
+        std::vector<media_v2_interface> interfaces(topology.num_interfaces);
+        std::vector<media_v2_pad> pads(topology.num_pads);
+        std::vector<media_v2_link> links(topology.num_links);
+        topology.ptr_entities = pointer(entities);
+        topology.ptr_interfaces = pointer(interfaces);
+        topology.ptr_pads = pointer(pads);
+        topology.ptr_links = pointer(links);
+        if (ioctl_next()(media.get(), MEDIA_IOC_G_TOPOLOGY, &topology) < 0 ||
+            topology.num_entities != entities.size() ||
+            topology.num_interfaces != interfaces.size() || topology.num_pads != pads.size() ||
+            topology.num_links != links.size())
+            continue;
+        const auto interface_link = [&](uint32_t id, bool by_interface) {
+            return std::find_if(links.begin(), links.end(), [&](const auto &link) {
+                return (link.flags & MEDIA_LNK_FL_LINK_TYPE) == MEDIA_LNK_FL_INTERFACE_LINK &&
+                       (by_interface ? link.source_id : link.sink_id) == id;
+            });
+        };
+        const auto pad_entity = [&](uint32_t id) {
+            const auto pad = std::find_if(pads.begin(), pads.end(),
+                                          [id](const auto &item) { return item.id == id; });
+            return pad == pads.end() ? 0 : pad->entity_id;
+        };
+        const auto node = std::find_if(interfaces.begin(), interfaces.end(), [&](const auto &item) {
+            return item.intf_type == MEDIA_INTF_T_V4L_VIDEO && item.devnode.major == major(video) &&
+                   item.devnode.minor == minor(video);
+        });
+        if (node == interfaces.end())
+            continue;
+        const auto start = interface_link(node->id, true);
+        if (start == links.end())
+            continue;
+        std::vector<uint32_t> walk{start->sink_id};
+        for (size_t next = 0; next < walk.size() && walk.size() <= entities.size(); ++next) {
+            for (const auto &link : links) {
+                if ((link.flags & MEDIA_LNK_FL_LINK_TYPE) != MEDIA_LNK_FL_DATA_LINK ||
+                    !(link.flags & MEDIA_LNK_FL_ENABLED) || pad_entity(link.sink_id) != walk[next])
+                    continue;
+                const uint32_t source = pad_entity(link.source_id);
+                if (!source || std::find(walk.begin(), walk.end(), source) != walk.end())
+                    continue;
+                walk.push_back(source);
+                const auto entity =
+                    std::find_if(entities.begin(), entities.end(),
+                                 [source](const auto &item) { return item.id == source; });
+                if (entity == entities.end() || entity->function != MEDIA_ENT_F_CAM_SENSOR)
+                    continue;
+                const auto subdev = interface_link(source, false);
+                const auto sensor =
+                    subdev == links.end()
+                        ? interfaces.end()
+                        : std::find_if(interfaces.begin(), interfaces.end(), [&](const auto &item) {
+                              return item.id == subdev->source_id;
+                          });
+                if (sensor != interfaces.end() && sensor->intf_type == MEDIA_INTF_T_V4L_SUBDEV)
+                    sources.push_back(sensor_id(sensor->devnode.major, sensor->devnode.minor));
+            }
+        }
+    }
+    return sources;
+}
 
 double clock_seconds(clockid_t clock) {
     timespec now{};
@@ -412,22 +502,29 @@ class CameraHook {
                                           "/name");
                 std::string video_name;
                 std::getline(device_name, video_name);
+                // Older device trees have no sensor ids; fall back to the original VFE routing.
+                const auto sources = video_sources(dev.st_rdev);
+                v4l2_format format{};
+                format.type = Capture;
+                const auto &pixels = format.fmt.pix_mp;
+                const bool streaming = buffers.count >= MinBuffers &&
+                                       buffers.memory == V4L2_MEMORY_DMABUF &&
+                                       !next(fd, VIDIOC_G_FMT, &format) && pixels.num_planes == 2 &&
+                                       // NV12 places the same 8-bit luma image first in plane 0.
+                                       (pixels.pixelformat == V4L2_PIX_FMT_GREY ||
+                                        pixels.pixelformat == V4L2_PIX_FMT_NV12);
                 for (auto &camera : cameras) {
-                    if (video_name != camera.video_name)
+                    if (sources.empty() ? video_name != camera.video_name
+                                        : std::find(sources.begin(), sources.end(), camera.name) ==
+                                              sources.end())
                         continue;
-                    if (buffers.count < MinBuffers || buffers.memory != V4L2_MEMORY_DMABUF) {
-                        camera.device = -1;
-                        continue;
-                    }
-                    v4l2_format format{};
-                    format.type = Capture;
-                    if (!next(fd, VIDIOC_G_FMT, &format) &&
-                        format.fmt.pix_mp.width == camera.width &&
-                        format.fmt.pix_mp.height == camera.height &&
-                        format.fmt.pix_mp.pixelformat == V4L2_PIX_FMT_GREY &&
-                        format.fmt.pix_mp.plane_fmt[0].bytesperline == camera.width &&
-                        format.fmt.pix_mp.num_planes == 2)
+                    // A shared CSIPHY can lead to two sensors; the frame size picks the camera.
+                    if (streaming && pixels.width == camera.width &&
+                        pixels.height == camera.height &&
+                        pixels.plane_fmt[0].bytesperline == camera.width)
                         camera.device = fd;
+                    else if (camera.device == fd || sources.empty())
+                        camera.device = -1;
                 }
             }
             errno = error;

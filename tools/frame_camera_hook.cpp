@@ -51,6 +51,7 @@ struct Camera {
     std::string serial;
     int device = -1;
     double last_sof = 0;
+    unsigned stride = 0;
 };
 
 struct Backing {
@@ -68,6 +69,17 @@ struct View {
     v4l2_buffer queue{};
     std::array<v4l2_plane, 2> planes{};
 };
+
+// Some Frames have XRService set the SLAM nodes to NV12. CAMSS then reports the width as
+// bytesperline but pads each line to the stride implied by the plane size, for example
+// 1152 bytes for 1056 pixels (1769472 = 1152 * 1024 * 3 / 2).
+unsigned line_stride(const v4l2_pix_format_mplane &pixels) {
+    const auto &plane = pixels.plane_fmt[0];
+    if (pixels.pixelformat != V4L2_PIX_FMT_NV12 || !pixels.height ||
+        plane.sizeimage * 2ull % (pixels.height * 3ull))
+        return plane.bytesperline;
+    return std::max<unsigned>(plane.bytesperline, plane.sizeimage * 2ull / (pixels.height * 3ull));
+}
 
 template <typename Item> uint64_t pointer(std::vector<Item> &items) {
     return reinterpret_cast<uintptr_t>(items.data());
@@ -308,7 +320,7 @@ class CameraHook {
                 time += view.time / FrontViews;
             descriptors[i] = view.file.get();
             views += (i ? ",[\"" : "[\"") + cameras[i].serial + "\"," +
-                     std::to_string(cameras[i].width) + "," + std::to_string(view.offset) + "]";
+                     std::to_string(cameras[i].stride) + "," + std::to_string(view.offset) + "]";
         }
         const uint64_t seq = sequence + 1;
         std::string header = "{\"seq\":" + std::to_string(seq) +
@@ -350,11 +362,12 @@ class CameraHook {
         if (!sof)
             return;
         const double gap = sof - std::exchange(camera.last_sof, sof);
-        // shortcut: the 60 fps sensor mode uses 8.38 ms and 21.62 ms SOF gaps.
-        // Read the exposure registers if Valve adds another interleaving cadence.
+        // shortcut: the sensor mode interleaves an 8.38 ms SOF gap with a longer one that follows
+        // the light-source frequency: 21.62 ms at 50 Hz (30 ms cycle) and 24.95 ms at 60 Hz
+        // (33.3 ms cycle). Read the exposure registers if Valve adds another interleaving cadence.
         const bool ir = gap > .007 && gap < .010;
         const bool front = index < FrontViews;
-        if (!ir && (!front || gap < .020 || gap > .023))
+        if (!ir && (!front || gap < .020 || gap > .026))
             return;
         if (sof <= last_published[ir] + Tolerance)
             return;
@@ -373,7 +386,7 @@ class CameraHook {
         const auto source = backing.find(pixels.m.fd);
         struct stat dma{};
         if (source == backing.end() || pixels.data_offset ||
-            pixels.bytesused < camera.width * camera.height || fstat(pixels.m.fd, &dma) < 0 ||
+            pixels.bytesused < camera.stride * camera.height || fstat(pixels.m.fd, &dma) < 0 ||
             dma.st_ino != source->second.inode)
             return;
         FileDescriptor shared(fcntl(source->second.file.get(), F_DUPFD_CLOEXEC, 3));
@@ -519,11 +532,13 @@ class CameraHook {
                                               sources.end())
                         continue;
                     // A shared CSIPHY can lead to two sensors; the frame size picks the camera.
+                    const unsigned stride = line_stride(pixels);
                     if (streaming && pixels.width == camera.width &&
-                        pixels.height == camera.height &&
-                        pixels.plane_fmt[0].bytesperline == camera.width)
+                        pixels.height == camera.height && stride >= camera.width &&
+                        size_t{stride} * camera.height <= camera.dma_size) {
                         camera.device = fd;
-                    else if (camera.device == fd || sources.empty())
+                        camera.stride = stride;
+                    } else if (camera.device == fd || sources.empty())
                         camera.device = -1;
                 }
             }
